@@ -6,6 +6,12 @@ The initial bootstrap intentionally keeps the upstream `@earendil-works/pi-*` pa
 
 Piri uses the `piri` application name and stores its state under `~/.piri/agent`, isolated from an installed Pi configuration.
 
+ccc-node launches Piri through the versioned `scripts/piri-ccc.sh` entrypoint.
+That boundary supports provider-qualified model defaults and an optional
+owner-only bootstrap context file without putting memory contents or provider
+credentials in process arguments. See [PIRI.md](PIRI.md) for the contract and
+deployment procedure.
+
 ## Upstream packages
 
 The repository includes Pi's self-extensible coding agent and supporting packages:

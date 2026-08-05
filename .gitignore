@@ -18,10 +18,9 @@ packages/ai/src/providers/.model-generation-*/
 # Environment
 .env
 
-# Per-node deployment artifacts (NOT part of the distribution; created at deploy)
-# piri-ccc.sh bakes in the node's model (e.g. zai/glm-5.2 or kimi-coding/k3);
-# credentials live in ~/.piri/agent/auth.json, never in this repo.
-piri-ccc.sh
+# Legacy per-node launcher override. The canonical launcher is versioned at
+# scripts/piri-ccc.sh and takes non-secret defaults from its environment.
+/piri-ccc.sh
 
 # Editor files
 .vscode/

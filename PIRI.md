@@ -4,7 +4,7 @@ Piri is a ccc-node-oriented distribution of the Pi agent harness. It keeps Pi's 
 
 ## Product boundary
 
-- Piri owns the application identity, configuration directory, model aliases, operator experience, and ccc-node adapter.
+- Piri owns the application identity, configuration directory, model aliases, operator experience, and versioned ccc-node launch contract.
 - Pi remains the upstream source for the core TUI, agent loop, provider implementations, and extension API.
 - ccc-node owns Telegram transport, workload routing, scheduling, policy, diagnostics, and cross-runtime session recovery.
 - Upstream copyright and MIT license notices remain intact.
@@ -41,6 +41,27 @@ Claude stays outside Piri's native model loop when subscription usage requires A
 4. Keep Claude subscription sessions on `ClaudeRuntime` and normalize their events at the ccc-node boundary.
 5. Add Piri-specific readiness and diagnostics without forking upstream provider internals unnecessarily.
 
+## ccc-node launch and bootstrap contract
+
+`scripts/piri-ccc.sh` is the versioned entrypoint for ccc-node. It runs the
+built Piri CLI and accepts only non-secret policy through its environment:
+
+| Variable | Purpose |
+| --- | --- |
+| `PIRI_CLI_PATH` | Optional executable override; defaults to the built `packages/coding-agent/dist/cli.js`. |
+| `PIRI_DEFAULT_MODEL` | Optional provider-qualified default, such as `kimi-coding/k3`. An explicit ccc session `--model` wins. |
+| `PIRI_DEFAULT_THINKING` | Optional default thinking level. An explicit ccc session `--thinking` wins. |
+| `PIRI_BOOTSTRAP_CONTEXT_FILE` | Optional bounded ccc memory snapshot appended to Piri's system prompt at process start. |
+| `PIRI_BOOTSTRAP_MAX_BYTES` | Maximum accepted snapshot size; defaults to 262144 bytes. |
+
+The bootstrap file path, not its contents, appears in the child argv. The
+launcher fails closed unless the file is a non-empty, readable, non-symlink
+regular file owned by the Piri process user with no group/other permissions.
+ccc-node owns atomic snapshot materialization and refresh timing. Piri owns
+safe consumption at session start. Transcript extraction and Wiki/Honcho/local
+writeback remain ccc-node responsibilities and are not implied by this read
+bootstrap.
+
 ## Upstream synchronization
 
 Piri changes should stay in small, clearly owned surfaces. Provider fixes and generally useful harness improvements should be suitable for upstreaming. Piri-only policy, branding, Telegram behavior, and ccc-node integration remain downstream.
@@ -52,35 +73,29 @@ This repo (`jinwon-int/piri`) is the canonical source for the Piri distribution.
 the model launcher are **not** committed either (see `.gitignore`).
 
 ```bash
-# 1. Clone to /opt/piri and install dependencies (Node >= 22; tsx runs on v24).
+# 1. Clone, install without lifecycle scripts, and build from the frozen model
+#    catalog shipped by this repository (Node >= 22).
 git clone https://github.com/jinwon-int/piri.git /opt/piri
-cd /opt/piri && npm ci
+cd /opt/piri
+npm ci --ignore-scripts
+npm run build:offline
 
-# 2. Per-node model launcher (/opt/piri/piri-ccc.sh — NOT committed).
-#    Pick the node's model:
-cat > /opt/piri/piri-ccc.sh <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-exec /opt/piri/piri-test.sh --model zai/glm-5.2 "$@"   # or kimi-coding/k3
-SH
-chmod 700 /opt/piri/piri-ccc.sh
+# 2. Provision provider credentials through Piri's interactive /login flow or
+#    the node's owner-only secret manager. Never place credential values in a
+#    launcher, command line, repository, deployment log, or Wiki page.
 
-# 3. Provider credentials in the Piri auth store (owner-only, never committed).
-mkdir -p ~/.piri/agent && chmod 700 ~/.piri/agent
-# zai node:
-#   echo '{"zai":{"type":"api_key","key":"<ZAI_KEY>"}}' > ~/.piri/agent/auth.json
-# kimi node:
-#   echo '{"kimi-coding":{"type":"api_key","key":"<KIMI_KEY>"}}' > ~/.piri/agent/auth.json
-chmod 600 ~/.piri/agent/auth.json
-
-# 4. Wire ccc-node to the Piri runtime (systemd drop-in zz-piri.conf):
+# 3. Wire ccc-node to the versioned launcher (systemd drop-in zz-piri.conf):
 #    Environment="CCC_AGENT_PROVIDER=piri"
-#    Environment="CCC_PIRI_CLI_PATH=/opt/piri/piri-ccc.sh"
+#    Environment="CCC_PIRI_CLI_PATH=/opt/piri/scripts/piri-ccc.sh"
+#    Environment="PIRI_DEFAULT_MODEL=kimi-coding/k3"
+#    Environment="PIRI_DEFAULT_THINKING=max"
+#    Environment="PIRI_BOOTSTRAP_CONTEXT_FILE=/var/lib/ccc-node/piri-bootstrap.md"
 #    (unset ANTHROPIC_*/CLAUDE_CODE_* so the Piri subprocess is not polluted)
 ```
 
-Updating a node is then `git pull && npm ci` (the per-node `piri-ccc.sh` and
-`~/.piri/agent/auth.json` are preserved across pulls because they are gitignored).
+Updating a node is `git pull --ff-only`, `npm ci --ignore-scripts`, then
+`npm run build:offline`. The owner-only `~/.piri/agent/auth.json` remains
+outside the checkout and is preserved across updates.
 
 Upstream Pi is tracked via the `upstream` remote (`earendil-works/pi`); rebase or
 cherry-pick generally-useful changes onto this distribution.
