@@ -1,0 +1,52 @@
+node_modules/
+dist/
+.artifacts/
+*.log
+.DS_Store
+*.tsbuildinfo
+# packages/*/node_modules/
+packages/*/dist/
+packages/*/dist-chrome/
+packages/*/dist-firefox/
+packages/ai/src/providers/.model-generation-*/
+*.cpuprofile
+
+# piri distribution ships the frozen provider model catalogs (data/) so a fresh
+# clone is runnable without re-running model generation against each provider.
+# (Upstream Pi gitignores these because it regenerates them; piri freezes them.)
+
+# Environment
+.env
+
+# Per-node deployment artifacts (NOT part of the distribution; created at deploy)
+# piri-ccc.sh bakes in the node's model (e.g. zai/glm-5.2 or kimi-coding/k3);
+# credentials live in ~/.piri/agent/auth.json, never in this repo.
+piri-ccc.sh
+
+# Editor files
+.vscode/
+.zed/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Package specific
+.npm/
+coverage/
+.nyc_output/
+.pi_config/
+tui-debug.log
+compaction-results/
+.opencode/
+syntax.jsonl
+out.jsonl
+pi-*.html
+out.html
+packages/coding-agent/binaries/
+todo.md
+plans/
+.pi/hf-sessions/
+.pi/hf-sessions-backup/
+collect.sh
