@@ -23,6 +23,7 @@ export interface Args {
 	version?: boolean;
 	mode?: Mode;
 	outputSchema?: string;
+	progressFile?: string;
 	name?: string;
 	noSession?: boolean;
 	session?: string;
@@ -91,6 +92,8 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--output-schema" && i + 1 < args.length) {
 			result.outputSchema = args[++i];
+		} else if (arg === "--progress-file" && i + 1 < args.length) {
+			result.progressFile = args[++i];
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
@@ -277,6 +280,8 @@ ${chalk.bold("Options:")}
   --mode <mode>                  Output mode: text (default), json, or rpc
   --output-schema <file>         Validate the final print-mode answer against a JSON Schema,
                                  re-prompting with validator errors until it complies
+  --progress-file <path>         Append compact JSONL progress events (turns, tools, retries)
+                                 so wrappers can distinguish "working" from "stuck"
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume

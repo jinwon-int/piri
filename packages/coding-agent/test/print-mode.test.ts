@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
@@ -278,5 +278,115 @@ describe("runPrintMode --output-schema", () => {
 		});
 		expect(exitCode).toBe(2);
 		expect(host.session.prompt).not.toHaveBeenCalled();
+	});
+});
+
+describe("runPrintMode --progress-file", () => {
+	function stdoutSpyLocal() {
+		let text = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
+			text += String(chunk);
+			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+			if (typeof callback === "function") (callback as (error?: Error | null) => void)(null);
+			return true;
+		}) as never);
+		return () => text;
+	}
+
+	function createProgressHost(emitDuringPrompt: Array<Record<string, unknown>>) {
+		let listener: ((event: never) => void) | undefined;
+		const session = {
+			sessionManager: { getHeader: () => undefined },
+			agent: { waitForIdle: async () => {}, subscribe: vi.fn(() => () => {}) },
+			state: { messages: [createAssistantMessage({ text: "done" })] },
+			extensionRunner: { hasHandlers: () => false, emit: vi.fn(async () => {}) },
+			bindExtensions: vi.fn(async () => {}),
+			subscribe: vi.fn((l: never) => {
+				listener = l;
+				return () => {};
+			}),
+			prompt: vi.fn(async () => {
+				for (const event of emitDuringPrompt) listener?.(event as never);
+			}),
+			reload: vi.fn(async () => {}),
+		};
+		return {
+			session,
+			newSession: vi.fn(async () => undefined),
+			fork: vi.fn(async () => ({ selectedText: "" })),
+			switchSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => {}),
+			setRebindSession: vi.fn(),
+		};
+	}
+
+	function progressPath(): string {
+		return join(mkdtempSync(join(tmpdir(), "pi-progress-mode-")), "progress.jsonl");
+	}
+
+	it("appends projected session events to the progress file", async () => {
+		const host = createProgressHost([
+			{ type: "turn_start" },
+			{ type: "tool_execution_start", toolCallId: "1", toolName: "read", args: { path: "/secret" } },
+			{ type: "tool_execution_end", toolCallId: "1", toolName: "read", result: {}, isError: false },
+			{ type: "message_update", message: {}, assistantMessageEvent: {} },
+		]);
+		stdoutSpyLocal();
+		const path = progressPath();
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", initialMessage: "task", progressFile: path });
+
+		expect(exitCode).toBe(0);
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		expect(lines.map((l) => l.type)).toEqual(["turn_start", "tool_execution_start", "tool_execution_end"]);
+		expect(JSON.stringify(lines)).not.toContain("/secret");
+	});
+
+	it("exits 2 when the progress file cannot be opened", async () => {
+		const host = createProgressHost([]);
+		stdoutSpyLocal();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			progressFile: "/nonexistent-dir-xyz/progress.jsonl",
+		});
+
+		expect(exitCode).toBe(2);
+		expect(host.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("marks output-schema retries in the progress file", async () => {
+		const schema = {
+			type: "object",
+			required: ["status"],
+			additionalProperties: false,
+			properties: { status: { type: "string", enum: ["done", "blocked"] } },
+		};
+		const schemaDir = mkdtempSync(join(tmpdir(), "pi-schema-progress-"));
+		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
+		const host = createProgressHost([]);
+		host.session.state.messages = [createAssistantMessage({ text: "not json" })] as never;
+		host.session.prompt = vi.fn(async () => {
+			host.session.state.messages.push(createAssistantMessage({ text: '{"status":"done"}' }) as never);
+		}) as never;
+		stdoutSpyLocal();
+		const path = progressPath();
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			outputSchema: join(schemaDir, "schema.json"),
+			progressFile: path,
+		});
+
+		expect(exitCode).toBe(0);
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		expect(lines.some((l) => l.marker === "output_schema_retry" && l.attempt === 1)).toBe(true);
 	});
 });
