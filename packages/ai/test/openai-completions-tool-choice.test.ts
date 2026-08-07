@@ -196,7 +196,32 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("maps groq qwen3 reasoning levels to default reasoning_effort", async () => {
-		const model = getModel("groq", "qwen/qwen3-32b")!;
+		// Synthetic fixture pinned to the mapping under test: "medium" is not a
+		// supported level, so it clamps up to "high", which groq maps to
+		// reasoning_effort "default". The live catalog no longer carries a groq
+		// model with this map (qwen/qwen3-32b was dropped upstream), so the
+		// fixture keeps the test hermetic.
+		const model: Model<"openai-completions"> = {
+			id: "qwen/qwen3-32b",
+			name: "Qwen3-32B",
+			api: "openai-completions",
+			provider: "groq",
+			baseUrl: "https://api.groq.com/openai/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 131072,
+			maxTokens: 40960,
+			thinkingLevelMap: {
+				off: "none",
+				minimal: null,
+				low: null,
+				medium: null,
+				high: "default",
+				xhigh: null,
+				max: null,
+			},
+		};
 		let payload: unknown;
 
 		await streamSimple(

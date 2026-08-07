@@ -3,8 +3,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { shouldRunFirstTimeSetup } from "../src/cli/startup-ui.ts";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, PACKAGE_NAME } from "../src/config.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+
+// First-time setup is intentionally gated to the official Pi distribution;
+// rebrands (e.g. piri) never run it.
+const IS_OFFICIAL_DISTRIBUTION =
+	PACKAGE_NAME === "@earendil-works/pi-coding-agent" && APP_NAME === "pi" && CONFIG_DIR_NAME === ".pi";
 
 describe("shouldRunFirstTimeSetup", () => {
 	const originalPiExperimental = process.env.PI_EXPERIMENTAL;
@@ -34,7 +39,7 @@ describe("shouldRunFirstTimeSetup", () => {
 	});
 
 	it("returns true when experimental, default agent dir, and no settings.json", () => {
-		expect(shouldRunFirstTimeSetup(settingsPath)).toBe(true);
+		expect(shouldRunFirstTimeSetup(settingsPath)).toBe(IS_OFFICIAL_DISTRIBUTION);
 	});
 
 	it("returns false when experimental features are disabled", () => {
