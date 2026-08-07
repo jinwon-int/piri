@@ -921,6 +921,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessage,
 			initialImages,
 			outputSchema: parsed.outputSchema,
+			progressFile: parsed.progressFile,
 		});
 		stopThemeWatcher();
 		restoreStdout();
