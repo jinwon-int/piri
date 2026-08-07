@@ -12,6 +12,7 @@ import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "..
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, loadOutputSchema } from "./output-schema.ts";
+import { openProgressFile, type ProgressFileWriter } from "./progress-file.ts";
 
 /**
  * Options for print mode.
@@ -32,6 +33,12 @@ export interface PrintModeOptions {
 	 * attempt budget is exhausted. (piri A2A worker Phase 0, a2a-nexus#1745)
 	 */
 	outputSchema?: string;
+	/**
+	 * Path to a JSONL progress file appended with compact, content-free
+	 * session events (turns, tools, retries). Lets outer wrappers tell
+	 * "working" from "stuck" via file mtime/content. (a2a-nexus#1745 item 2)
+	 */
+	progressFile?: string;
 }
 
 /** Total attempts for schema-satisfying output (initial + retries). */
@@ -64,6 +71,7 @@ async function emitSchemaValidatedOutput(
 	session: AgentSessionRuntime["session"],
 	firstMessage: AssistantMessage,
 	schemaPath: string,
+	progress?: ProgressFileWriter,
 ): Promise<number> {
 	let validator: ReturnType<typeof compileOutputSchema>;
 	try {
@@ -95,6 +103,7 @@ async function emitSchemaValidatedOutput(
 			}
 		}
 		if (attempt === maxAttempts) break;
+		progress?.mark("output_schema_retry", { attempt, maxAttempts, errors });
 		await session.prompt(buildSchemaFeedback(errors));
 		const next = session.state.messages[session.state.messages.length - 1];
 		if (next?.role !== "assistant") {
@@ -123,6 +132,17 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeBackpressure: (() => void) | undefined;
+	let progress: ProgressFileWriter | undefined;
+	if (options.progressFile) {
+		try {
+			progress = await openProgressFile(options.progressFile);
+		} catch (error: unknown) {
+			console.error(
+				`Cannot open --progress-file ${options.progressFile}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return 2;
+		}
+	}
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
@@ -193,6 +213,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		unsubscribe = session.subscribe((event) => {
+			progress?.write(event);
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
@@ -230,7 +251,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			if (lastMessage?.role === "assistant") {
 				const assistantMsg = lastMessage as AssistantMessage;
 				if (options.outputSchema) {
-					exitCode = await emitSchemaValidatedOutput(session, assistantMsg, options.outputSchema);
+					exitCode = await emitSchemaValidatedOutput(session, assistantMsg, options.outputSchema, progress);
 				} else if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
 					exitCode = 1;
@@ -253,6 +274,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			cleanup();
 		}
 		await disposeRuntime();
+		await progress?.close().catch(() => {});
 		await flushRawStdout();
 	}
 }
