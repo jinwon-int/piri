@@ -10,15 +10,29 @@
 
 > New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-# Pi Agent Harness
+# Piri Agent Harness
 
-This is the home of the Pi agent harness project including our self extensible coding agent.
+Piri is a downstream distribution of the [Pi agent harness](https://github.com/earendil-works/pi), adapted for ccc-node and a multi-provider subscription runtime.
+
+The initial bootstrap intentionally keeps the upstream `@earendil-works/pi-*` package namespace. Piri owns the product surface, configuration, ccc-node integration, and provider policy while staying close enough to upstream for regular synchronization. See [PIRI.md](PIRI.md) for the boundary and roadmap.
+
+Piri uses the `piri` application name and stores its state under `~/.piri/agent`, isolated from an installed Pi configuration.
+
+ccc-node launches Piri through the versioned `scripts/piri-ccc.sh` entrypoint.
+That boundary supports provider-qualified model defaults and an optional
+owner-only bootstrap context file without putting memory contents or provider
+credentials in process arguments. See [PIRI.md](PIRI.md) for the contract and
+deployment procedure.
+
+## Upstream packages
+
+The repository includes Pi's self-extensible coding agent and supporting packages:
 
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
 * **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
 
-To learn more about Pi:
+For upstream Pi documentation:
 
 * [Visit pi.dev](https://pi.dev), the project website with demos
 * [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself

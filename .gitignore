@@ -15,6 +15,10 @@ packages/ai/src/providers/.model-generation-*/
 # Environment
 .env
 
+# Legacy per-node launcher override. The canonical launcher is versioned at
+# scripts/piri-ccc.sh and takes non-secret defaults from its environment.
+/piri-ccc.sh
+
 # Editor files
 .vscode/
 .zed/
