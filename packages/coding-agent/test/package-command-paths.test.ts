@@ -133,7 +133,10 @@ describe("package commands", () => {
 
 	it("skips untrusted project package settings", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -149,7 +152,10 @@ describe("package commands", () => {
 
 	it("uses remembered project trust for list", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		new ProjectTrustStore(agentDir).set(projectDir, true);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -168,7 +174,10 @@ describe("package commands", () => {
 
 	it("overrides remembered trust for list with --no-approve", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		new ProjectTrustStore(agentDir).set(projectDir, true);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -186,7 +195,10 @@ describe("package commands", () => {
 
 	it("approves project trust for list with --approve", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -205,7 +217,10 @@ describe("package commands", () => {
 	it("uses default project trust for list", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -223,7 +238,10 @@ describe("package commands", () => {
 
 	it("uses project_trust extensions for package commands", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
@@ -313,7 +331,10 @@ describe("package commands", () => {
 	it("lets trust.json override default project trust", async () => {
 		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
-		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ packages: ["npm:@project/pkg"] }));
+		writeFileSync(
+			join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+			JSON.stringify({ packages: ["npm:@project/pkg"] }),
+		);
 		new ProjectTrustStore(agentDir).set(projectDir, false);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -738,7 +759,7 @@ if(args.includes("install")) process.exit(23);
 			expect(process.exitCode).toBe(1);
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stdout).not.toContain(`Updated ${APP_NAME}`);
+			expect(stdout).not.toContain(`Updated pi`);
 			expect(stderr).toContain("exited with code 23");
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
 			expect(recordedCalls).toEqual([

@@ -425,7 +425,8 @@ describe("detectInstallMethod", () => {
 		});
 	});
 
-	test("does not self-update when npm install path is not writable", () => {
+	// Permission-bit based: root bypasses writability checks, so skip under uid 0.
+	test.skipIf(process.getuid?.() === 0)("does not self-update when npm install path is not writable", () => {
 		const { packageDir } = createNpmPrefixInstall();
 		chmodSync(packageDir, 0o500);
 

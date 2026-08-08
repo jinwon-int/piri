@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionShutdownEvent } from "../src/index.ts";
@@ -138,5 +141,252 @@ describe("runPrintMode", () => {
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+});
+
+describe("runPrintMode --output-schema", () => {
+	const schema = {
+		type: "object",
+		required: ["status", "summary"],
+		additionalProperties: false,
+		properties: { status: { type: "string", enum: ["done", "blocked"] }, summary: { type: "string" } },
+	};
+
+	function writeSchema(): string {
+		const path = `${mkdtempSync(join(tmpdir(), "pi-schema-"))}schema.json`;
+		writeFileSync(path, JSON.stringify(schema));
+		return path;
+	}
+
+	/** Host whose prompt() pushes the next scripted assistant message. */
+	function createScriptedHost(script: AssistantMessage[]) {
+		const state = { messages: [script[0]] };
+		let calls = 0;
+		const session = {
+			sessionManager: { getHeader: () => undefined },
+			agent: { waitForIdle: async () => {}, subscribe: vi.fn(() => () => {}) },
+			state,
+			extensionRunner: { hasHandlers: () => false, emit: vi.fn(async () => {}) },
+			bindExtensions: vi.fn(async () => {}),
+			subscribe: vi.fn(() => () => {}),
+			prompt: vi.fn(async (..._args: unknown[]) => {
+				calls += 1;
+				if (script[calls]) state.messages.push(script[calls]);
+			}),
+			reload: vi.fn(async () => {}),
+		};
+		return {
+			session,
+			newSession: vi.fn(async () => undefined),
+			fork: vi.fn(async () => ({ selectedText: "" })),
+			switchSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => {}),
+			setRebindSession: vi.fn(),
+		};
+	}
+
+	function stdoutSpy() {
+		let text = "";
+		// output-guard resolves writes only when the write callback fires —
+		// a capturing spy must invoke it or flushRawStdout() hangs forever.
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
+			text += String(chunk);
+			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+			if (typeof callback === "function") (callback as (error?: Error | null) => void)(null);
+			return true;
+		}) as never);
+		return () => text;
+	}
+
+	it("prints validated JSON and prompts only once", async () => {
+		const host = createScriptedHost([createAssistantMessage({ text: '{"status":"done","summary":"ok"}' })]);
+		const read = stdoutSpy();
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			initialMessage: "task",
+			outputSchema: writeSchema(),
+		});
+
+		expect(exitCode).toBe(0);
+		expect(host.session.prompt).toHaveBeenCalledTimes(1);
+		expect(read()).toBe('{"status":"done","summary":"ok"}\n');
+	});
+
+	it("unwraps fenced JSON before validating", async () => {
+		const host = createScriptedHost([
+			createAssistantMessage({ text: '```json\n{"status":"done","summary":"ok"}\n```' }),
+		]);
+		stdoutSpy();
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", outputSchema: writeSchema() });
+		expect(exitCode).toBe(0);
+	});
+
+	it("re-prompts with validator errors until the answer complies", async () => {
+		const host = createScriptedHost([
+			createAssistantMessage({ text: "The status is done." }),
+			createAssistantMessage({ text: '{"status":"done","summary":"fixed"}' }),
+		]);
+		const read = stdoutSpy();
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", outputSchema: writeSchema() });
+
+		expect(exitCode).toBe(0);
+		// no initialMessage: the only prompt call is the schema feedback retry
+		expect(host.session.prompt).toHaveBeenCalledTimes(1);
+		expect(String(host.session.prompt.mock.calls[0][0])).toContain("did not satisfy the required output schema");
+		expect(read()).toBe('{"status":"done","summary":"fixed"}\n');
+	});
+
+	it("exits 1 without printing when the attempt budget runs out", async () => {
+		const host = createScriptedHost([
+			createAssistantMessage({ text: "no json" }),
+			createAssistantMessage({ text: '{"status":"maybe"}' }),
+			createAssistantMessage({ text: '{"summary":"still missing status"}' }),
+		]);
+		const read = stdoutSpy();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", outputSchema: writeSchema() });
+
+		expect(exitCode).toBe(1);
+		expect(host.session.prompt).toHaveBeenCalledTimes(2);
+		expect(read()).toBe("");
+	});
+
+	it("exits 2 for an unreadable schema file", async () => {
+		const host = createScriptedHost([createAssistantMessage({ text: '{"status":"done","summary":"ok"}' })]);
+		stdoutSpy();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			outputSchema: "/nonexistent/schema.json",
+		});
+		expect(exitCode).toBe(2);
+	});
+
+	it("rejects --mode json combined with --output-schema", async () => {
+		const host = createScriptedHost([createAssistantMessage({ text: "{}" })]);
+		stdoutSpy();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "json",
+			outputSchema: writeSchema(),
+		});
+		expect(exitCode).toBe(2);
+		expect(host.session.prompt).not.toHaveBeenCalled();
+	});
+});
+
+describe("runPrintMode --progress-file", () => {
+	function stdoutSpyLocal() {
+		let text = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
+			text += String(chunk);
+			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+			if (typeof callback === "function") (callback as (error?: Error | null) => void)(null);
+			return true;
+		}) as never);
+		return () => text;
+	}
+
+	function createProgressHost(emitDuringPrompt: Array<Record<string, unknown>>) {
+		let listener: ((event: never) => void) | undefined;
+		const session = {
+			sessionManager: { getHeader: () => undefined },
+			agent: { waitForIdle: async () => {}, subscribe: vi.fn(() => () => {}) },
+			state: { messages: [createAssistantMessage({ text: "done" })] },
+			extensionRunner: { hasHandlers: () => false, emit: vi.fn(async () => {}) },
+			bindExtensions: vi.fn(async () => {}),
+			subscribe: vi.fn((l: never) => {
+				listener = l;
+				return () => {};
+			}),
+			prompt: vi.fn(async () => {
+				for (const event of emitDuringPrompt) listener?.(event as never);
+			}),
+			reload: vi.fn(async () => {}),
+		};
+		return {
+			session,
+			newSession: vi.fn(async () => undefined),
+			fork: vi.fn(async () => ({ selectedText: "" })),
+			switchSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => {}),
+			setRebindSession: vi.fn(),
+		};
+	}
+
+	function progressPath(): string {
+		return join(mkdtempSync(join(tmpdir(), "pi-progress-mode-")), "progress.jsonl");
+	}
+
+	it("appends projected session events to the progress file", async () => {
+		const host = createProgressHost([
+			{ type: "turn_start" },
+			{ type: "tool_execution_start", toolCallId: "1", toolName: "read", args: { path: "/secret" } },
+			{ type: "tool_execution_end", toolCallId: "1", toolName: "read", result: {}, isError: false },
+			{ type: "message_update", message: {}, assistantMessageEvent: {} },
+		]);
+		stdoutSpyLocal();
+		const path = progressPath();
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", initialMessage: "task", progressFile: path });
+
+		expect(exitCode).toBe(0);
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		expect(lines.map((l) => l.type)).toEqual(["turn_start", "tool_execution_start", "tool_execution_end"]);
+		expect(JSON.stringify(lines)).not.toContain("/secret");
+	});
+
+	it("exits 2 when the progress file cannot be opened", async () => {
+		const host = createProgressHost([]);
+		stdoutSpyLocal();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			progressFile: "/nonexistent-dir-xyz/progress.jsonl",
+		});
+
+		expect(exitCode).toBe(2);
+		expect(host.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("marks output-schema retries in the progress file", async () => {
+		const schema = {
+			type: "object",
+			required: ["status"],
+			additionalProperties: false,
+			properties: { status: { type: "string", enum: ["done", "blocked"] } },
+		};
+		const schemaDir = mkdtempSync(join(tmpdir(), "pi-schema-progress-"));
+		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
+		const host = createProgressHost([]);
+		host.session.state.messages = [createAssistantMessage({ text: "not json" })] as never;
+		host.session.prompt = vi.fn(async () => {
+			host.session.state.messages.push(createAssistantMessage({ text: '{"status":"done"}' }) as never);
+		}) as never;
+		stdoutSpyLocal();
+		const path = progressPath();
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			outputSchema: join(schemaDir, "schema.json"),
+			progressFile: path,
+		});
+
+		expect(exitCode).toBe(0);
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		expect(lines.some((l) => l.marker === "output_schema_retry" && l.attempt === 1)).toBe(true);
 	});
 });

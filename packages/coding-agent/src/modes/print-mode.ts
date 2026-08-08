@@ -11,6 +11,8 @@ import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
+import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, loadOutputSchema } from "./output-schema.ts";
+import { openProgressFile, type ProgressFileWriter } from "./progress-file.ts";
 
 /**
  * Options for print mode.
@@ -24,6 +26,94 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+	/**
+	 * Path to a JSON Schema the final assistant message must satisfy (text
+	 * mode only). On violation the model is re-prompted with the validator
+	 * errors; the run exits non-zero without printing stdout output when the
+	 * attempt budget is exhausted. (piri A2A worker Phase 0, a2a-nexus#1745)
+	 */
+	outputSchema?: string;
+	/**
+	 * Path to a JSONL progress file appended with compact, content-free
+	 * session events (turns, tools, retries). Lets outer wrappers tell
+	 * "working" from "stuck" via file mtime/content. (a2a-nexus#1745 item 2)
+	 */
+	progressFile?: string;
+}
+
+/** Total attempts for schema-satisfying output (initial + retries). */
+const OUTPUT_SCHEMA_DEFAULT_ATTEMPTS = 3;
+const OUTPUT_SCHEMA_MAX_ATTEMPTS = 10;
+
+function resolveOutputSchemaAttempts(): number {
+	const raw = process.env.PI_OUTPUT_SCHEMA_ATTEMPTS;
+	if (!raw) return OUTPUT_SCHEMA_DEFAULT_ATTEMPTS;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed < 1) return OUTPUT_SCHEMA_DEFAULT_ATTEMPTS;
+	return Math.min(parsed, OUTPUT_SCHEMA_MAX_ATTEMPTS);
+}
+
+/** Concatenate the text contents of an assistant message. */
+function assistantText(message: AssistantMessage): string {
+	let text = "";
+	for (const content of message.content) {
+		if (content.type === "text") text += content.text;
+	}
+	return text;
+}
+
+/**
+ * Validate the final assistant text against --output-schema, re-prompting
+ * with validator errors on violation. Prints the validated JSON only;
+ * contract-violating output never reaches stdout.
+ */
+async function emitSchemaValidatedOutput(
+	session: AgentSessionRuntime["session"],
+	firstMessage: AssistantMessage,
+	schemaPath: string,
+	progress?: ProgressFileWriter,
+): Promise<number> {
+	let validator: ReturnType<typeof compileOutputSchema>;
+	try {
+		validator = compileOutputSchema(await loadOutputSchema(schemaPath));
+	} catch (error: unknown) {
+		console.error(`Invalid --output-schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
+		return 2;
+	}
+
+	const maxAttempts = resolveOutputSchemaAttempts();
+	let message = firstMessage;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			console.error(message.errorMessage || `Request ${message.stopReason}`);
+			return 1;
+		}
+		let errors: string[] = [];
+		const candidate = extractJsonCandidate(assistantText(message));
+		if (candidate !== undefined) {
+			try {
+				const value: unknown = JSON.parse(candidate);
+				if (validator.check(value)) {
+					writeRawStdout(`${JSON.stringify(value)}\n`);
+					return 0;
+				}
+				errors = validator.errors(value);
+			} catch {
+				errors = ["output candidate was not parseable JSON"];
+			}
+		}
+		if (attempt === maxAttempts) break;
+		progress?.mark("output_schema_retry", { attempt, maxAttempts, errors });
+		await session.prompt(buildSchemaFeedback(errors));
+		const next = session.state.messages[session.state.messages.length - 1];
+		if (next?.role !== "assistant") {
+			console.error("--output-schema retry produced no assistant message");
+			return 1;
+		}
+		message = next as AssistantMessage;
+	}
+	console.error(`--output-schema not satisfied after ${maxAttempts} attempt(s); no output printed`);
+	return 1;
 }
 
 /**
@@ -32,10 +122,27 @@ export interface PrintModeOptions {
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
+	// Schema validation applies to the final text answer; a JSON event stream
+	// would already have streamed unvalidated content by then.
+	if (options.outputSchema && mode !== "text") {
+		console.error("--output-schema requires text print mode (pi -p)");
+		return 2;
+	}
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeBackpressure: (() => void) | undefined;
+	let progress: ProgressFileWriter | undefined;
+	if (options.progressFile) {
+		try {
+			progress = await openProgressFile(options.progressFile);
+		} catch (error: unknown) {
+			console.error(
+				`Cannot open --progress-file ${options.progressFile}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return 2;
+		}
+	}
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
@@ -106,6 +213,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		unsubscribe = session.subscribe((event) => {
+			progress?.write(event);
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
@@ -142,7 +250,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 			if (lastMessage?.role === "assistant") {
 				const assistantMsg = lastMessage as AssistantMessage;
-				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				if (options.outputSchema) {
+					exitCode = await emitSchemaValidatedOutput(session, assistantMsg, options.outputSchema, progress);
+				} else if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
 					exitCode = 1;
 				} else {
@@ -164,6 +274,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			cleanup();
 		}
 		await disposeRuntime();
+		await progress?.close().catch(() => {});
 		await flushRawStdout();
 	}
 }

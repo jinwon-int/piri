@@ -52,7 +52,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 			`
 import { setTheme, stopThemeWatcher } from "${themeModulePath}";
 
-process.env[${JSON.stringify(ENV_AGENT_DIR)}] = "${agentDir}";
+process.env.${ENV_AGENT_DIR} = "${agentDir}";
 
 setTheme("custom-test", true);
 

@@ -920,6 +920,8 @@ export async function main(args: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
+			outputSchema: parsed.outputSchema,
+			progressFile: parsed.progressFile,
 		});
 		stopThemeWatcher();
 		restoreStdout();

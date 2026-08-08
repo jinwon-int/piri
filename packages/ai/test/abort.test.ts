@@ -154,7 +154,9 @@ describe("AI Providers Abort Tests", () => {
 	});
 
 	describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("Anthropic Provider Abort", () => {
-		const llm = getModel("anthropic", "claude-opus-4-1-20250805");
+		// claude-opus-4-5: present in both the checked-in and the regenerated
+		// model catalog (upstream dropped the dated 4-1 snapshot ids).
+		const llm = getModel("anthropic", "claude-opus-4-5");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
