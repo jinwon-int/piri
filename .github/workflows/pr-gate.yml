@@ -1,8 +1,19 @@
 name: PR Gate
 
 on:
+  # `check-contributor` is a required status check on `main`, and required checks are
+  # evaluated against the PR head SHA. Triggering on `opened` alone means any later push
+  # to the branch produces a head SHA this gate never reported on, leaving the PR
+  # permanently unmergeable (`enforce_admins: true` allows no override) with no fix other
+  # than opening a new PR. `synchronize` and `reopened` keep the gate reporting on the
+  # current head.
+  #
+  # Safe to re-run: this job never checks out PR-authored code. It only runs a pinned
+  # `actions/github-script` step that reads `.github/APPROVED_CONTRIBUTORS` from the
+  # default branch and calls the REST API, so the usual `pull_request_target` untrusted-
+  # code exposure does not apply.
   pull_request_target:
-    types: [opened]
+    types: [opened, reopened, synchronize]
 
 jobs:
   check-contributor:
