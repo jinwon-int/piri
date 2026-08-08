@@ -62,6 +62,27 @@ safe consumption at session start. Transcript extraction and Wiki/Honcho/local
 writeback remain ccc-node responsibilities and are not implied by this read
 bootstrap.
 
+### Where this launcher sits in the ccc-node chain
+
+ccc-node does not call this launcher directly. It calls its own `ccc-piri`
+wrapper, which materializes the node memory snapshot and then execs the real
+CLI:
+
+```
+CCC_PIRI_CLI_PATH=~/.claude/hooks/ccc-piri        # ccc-node wrapper (memory)
+  └─ CCC_PIRI_REAL_CLI_PATH=<this launcher>       # scripts/piri-ccc.sh
+       └─ PIRI_CLI_PATH=<the Piri CLI>
+```
+
+So the variable a node points at this launcher is **`CCC_PIRI_REAL_CLI_PATH`**,
+not `CCC_PIRI_CLI_PATH`. Setting `CCC_PIRI_CLI_PATH` to this launcher removes
+`ccc-piri` from the chain and silently drops ccc-node memory injection.
+
+That also makes `PIRI_BOOTSTRAP_CONTEXT_FILE` **redundant on a node running
+`ccc-piri`**: the wrapper already injects the snapshot as Piri's global context
+file (`~/.piri/agent/AGENTS.md`). Setting both injects the same memory twice.
+Use `PIRI_BOOTSTRAP_CONTEXT_FILE` only where Piri runs without the wrapper.
+
 ## Upstream synchronization
 
 Piri changes should stay in small, clearly owned surfaces. Provider fixes and generally useful harness improvements should be suitable for upstreaming. Piri-only policy, branding, Telegram behavior, and ccc-node integration remain downstream.
@@ -84,13 +105,26 @@ npm run build:offline
 #    the node's owner-only secret manager. Never place credential values in a
 #    launcher, command line, repository, deployment log, or Wiki page.
 
-# 3. Wire ccc-node to the versioned launcher (systemd drop-in zz-piri.conf):
+# 3. Wire ccc-node to the versioned launcher (systemd drop-in zz-piri.conf).
+#    CCC_PIRI_CLI_PATH stays on ccc-node's own ccc-piri wrapper; the launcher
+#    goes in CCC_PIRI_REAL_CLI_PATH. Pointing CCC_PIRI_CLI_PATH here instead
+#    drops the wrapper and with it ccc-node memory injection.
 #    Environment="CCC_AGENT_PROVIDER=piri"
-#    Environment="CCC_PIRI_CLI_PATH=/opt/piri/scripts/piri-ccc.sh"
+#    Environment="CCC_PIRI_CLI_PATH=/root/.claude/hooks/ccc-piri"
+#    Environment="CCC_PIRI_REAL_CLI_PATH=/opt/piri/scripts/piri-ccc.sh"
 #    Environment="PIRI_DEFAULT_MODEL=kimi-coding/k3"
 #    Environment="PIRI_DEFAULT_THINKING=max"
-#    Environment="PIRI_BOOTSTRAP_CONTEXT_FILE=/var/lib/ccc-node/piri-bootstrap.md"
 #    (unset ANTHROPIC_*/CLAUDE_CODE_* so the Piri subprocess is not polluted)
+#
+#    PIRI_BOOTSTRAP_CONTEXT_FILE is deliberately absent: ccc-piri already
+#    materializes the snapshot into ~/.piri/agent/AGENTS.md, so setting it here
+#    would inject the same memory twice. Set it only where Piri runs without
+#    the wrapper.
+#
+#    Step 1's build is required before this: the launcher defaults
+#    PIRI_CLI_PATH to packages/coding-agent/dist/cli.js and fails closed when
+#    it is missing. A node still running Piri from source must either build or
+#    set PIRI_CLI_PATH explicitly.
 ```
 
 Updating a node is `git pull --ff-only`, `npm ci --ignore-scripts`, then
