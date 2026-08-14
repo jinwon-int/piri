@@ -15,6 +15,83 @@ import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, loadOut
 import { openProgressFile, type ProgressFileWriter } from "./progress-file.ts";
 
 /**
+ * Print mode exit code contract (stable; consumed by the A2A docker runner
+ * profile and the broker analysis bridge, jinwon-int/a2a-nexus#1745):
+ * - 0: success — stdout holds the final answer (schema-validated when
+ *   --output-schema is set)
+ * - 1: unexpected internal error
+ * - 2: local usage/configuration error (bad flag combination, unreadable
+ *   --output-schema/--progress-file path) — nothing reached the provider
+ * - 3: provider/request failure — the model request errored or was aborted
+ * - 4: --output-schema not satisfied within the attempt budget
+ * Signal deaths use 129 (SIGHUP) / 143 (SIGTERM).
+ */
+export const PRINT_EXIT = {
+	success: 0,
+	internalError: 1,
+	usageError: 2,
+	requestFailure: 3,
+	schemaUnsatisfied: 4,
+} as const;
+
+/**
+ * Aggregated provider usage for one print-mode run. Content-free and
+ * machine-sized so wrappers (docker runner, broker bridge) can attribute
+ * cost/latency per task without parsing message content.
+ */
+export interface PrintUsageSummary {
+	/** Assistant responses observed during this run (== provider round-trips). */
+	requests: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	totalTokens: number;
+	/** Total provider-reported cost in USD (sum of message cost.total). */
+	costUsd: number;
+	/** Unique "provider/model" pairs that produced assistant messages. */
+	models: string[];
+}
+
+/**
+ * Sum usage over assistant messages added during this run; messages already
+ * present when the run started (resumed history) are excluded by startIndex.
+ */
+export function summarizeUsage(messages: ReadonlyArray<{ role: string }>, startIndex = 0): PrintUsageSummary {
+	const summary: PrintUsageSummary = {
+		requests: 0,
+		inputTokens: 0,
+		outputTokens: 0,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		totalTokens: 0,
+		costUsd: 0,
+		models: [],
+	};
+	const seen = new Set<string>();
+	for (const message of messages.slice(startIndex)) {
+		if (message.role !== "assistant") continue;
+		const assistant = message as AssistantMessage;
+		const usage = assistant.usage;
+		if (!usage) continue;
+		summary.requests += 1;
+		summary.inputTokens += usage.input;
+		summary.outputTokens += usage.output;
+		summary.cacheReadTokens += usage.cacheRead;
+		summary.cacheWriteTokens += usage.cacheWrite;
+		summary.totalTokens += usage.totalTokens;
+		summary.costUsd += usage.cost?.total ?? 0;
+		const model = `${assistant.provider}/${assistant.model}`;
+		if (!seen.has(model)) {
+			seen.add(model);
+			summary.models.push(model);
+		}
+	}
+	summary.costUsd = Number(summary.costUsd.toFixed(6));
+	return summary;
+}
+
+/**
  * Options for print mode.
  */
 export interface PrintModeOptions {
@@ -78,7 +155,7 @@ async function emitSchemaValidatedOutput(
 		validator = compileOutputSchema(await loadOutputSchema(schemaPath));
 	} catch (error: unknown) {
 		console.error(`Invalid --output-schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
-		return 2;
+		return PRINT_EXIT.usageError;
 	}
 
 	const maxAttempts = resolveOutputSchemaAttempts();
@@ -86,7 +163,7 @@ async function emitSchemaValidatedOutput(
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		if (message.stopReason === "error" || message.stopReason === "aborted") {
 			console.error(message.errorMessage || `Request ${message.stopReason}`);
-			return 1;
+			return PRINT_EXIT.requestFailure;
 		}
 		let errors: string[] = [];
 		const candidate = extractJsonCandidate(assistantText(message));
@@ -95,7 +172,7 @@ async function emitSchemaValidatedOutput(
 				const value: unknown = JSON.parse(candidate);
 				if (validator.check(value)) {
 					writeRawStdout(`${JSON.stringify(value)}\n`);
-					return 0;
+					return PRINT_EXIT.success;
 				}
 				errors = validator.errors(value);
 			} catch {
@@ -108,12 +185,12 @@ async function emitSchemaValidatedOutput(
 		const next = session.state.messages[session.state.messages.length - 1];
 		if (next?.role !== "assistant") {
 			console.error("--output-schema retry produced no assistant message");
-			return 1;
+			return PRINT_EXIT.requestFailure;
 		}
 		message = next as AssistantMessage;
 	}
 	console.error(`--output-schema not satisfied after ${maxAttempts} attempt(s); no output printed`);
-	return 1;
+	return PRINT_EXIT.schemaUnsatisfied;
 }
 
 /**
@@ -126,7 +203,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	// would already have streamed unvalidated content by then.
 	if (options.outputSchema && mode !== "text") {
 		console.error("--output-schema requires text print mode (pi -p)");
-		return 2;
+		return PRINT_EXIT.usageError;
 	}
 	let exitCode = 0;
 	let session = runtimeHost.session;
@@ -140,11 +217,30 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			console.error(
 				`Cannot open --progress-file ${options.progressFile}: ${error instanceof Error ? error.message : String(error)}`,
 			);
-			return 2;
+			return PRINT_EXIT.usageError;
 		}
 	}
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
+	// Index into session.state.messages where this run's messages begin; set
+	// after the initial rebind so resumed history is excluded from usage.
+	let runStartIndex = 0;
+
+	/**
+	 * Report aggregate provider usage exactly once per run, on the two
+	 * machine-readable surfaces wrappers already watch: a content-free
+	 * progress-file marker and a greppable PIRI_USAGE=<json> stderr line.
+	 * Never throws — usage reporting must not change the run's outcome.
+	 */
+	const emitUsageSummary = (): void => {
+		try {
+			const summary = summarizeUsage(session.state.messages, runStartIndex);
+			progress?.mark("usage", { ...summary });
+			console.error(`PIRI_USAGE=${JSON.stringify(summary)}`);
+		} catch {
+			// best-effort telemetry only
+		}
+	};
 
 	const disposeRuntime = async (): Promise<void> => {
 		if (disposed) return;
@@ -235,6 +331,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		await rebindSession();
+		runStartIndex = session.state.messages.length;
 
 		if (initialMessage) {
 			await session.prompt(initialMessage, { images: initialImages });
@@ -254,7 +351,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					exitCode = await emitSchemaValidatedOutput(session, assistantMsg, options.outputSchema, progress);
 				} else if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
-					exitCode = 1;
+					exitCode = PRINT_EXIT.requestFailure;
 				} else {
 					for (const content of assistantMsg.content) {
 						if (content.type === "text") {
@@ -268,8 +365,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		return exitCode;
 	} catch (error: unknown) {
 		console.error(error instanceof Error ? error.message : String(error));
-		return 1;
+		return PRINT_EXIT.internalError;
 	} finally {
+		emitUsageSummary();
 		for (const cleanup of signalCleanupHandlers) {
 			cleanup();
 		}

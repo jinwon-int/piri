@@ -179,6 +179,35 @@ In print mode, pi also reads piped stdin and merges it into the initial prompt:
 cat README.md | pi -p "Summarize this text"
 ```
 
+### Print Mode Automation Contract
+
+Print mode (`-p`) exposes machine-readable surfaces for wrappers such as CI
+jobs and worker runners:
+
+- `--output-schema <file>` validates the final answer against a JSON Schema
+  and re-prompts the model with the validator errors on violation (attempts:
+  3 by default, tunable via `PI_OUTPUT_SCHEMA_ATTEMPTS`, capped at 10). Only
+  schema-satisfying JSON reaches stdout.
+- `--progress-file <path>` appends compact, content-free JSONL progress
+  events (turns, tools, retries, compactions) so a wrapper can distinguish
+  "working" from "stuck" via file mtime/content.
+- On exit, a single `PIRI_USAGE=<json>` line is written to stderr with the
+  run's aggregate provider usage (`requests`, token counts, `costUsd`,
+  `models`); the same summary is appended to the progress file as a
+  `{"type":"marker","marker":"usage",...}` line.
+
+Exit codes are part of the stable contract:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success; stdout holds the final answer |
+| 1 | Unexpected internal error |
+| 2 | Local usage/configuration error (bad flag combination, unreadable `--output-schema`/`--progress-file` path); nothing reached the provider |
+| 3 | Provider/request failure; the model request errored or was aborted |
+| 4 | `--output-schema` not satisfied within the attempt budget |
+
+Signal deaths use 129 (SIGHUP) and 143 (SIGTERM).
+
 ### Model Options
 
 | Option | Description |
