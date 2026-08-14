@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionShutdownEvent } from "../src/index.ts";
-import { runPrintMode } from "../src/modes/print-mode.ts";
+import { runPrintMode, summarizeUsage } from "../src/modes/print-mode.ts";
 
 type EmitEvent = SessionShutdownEvent;
 
@@ -37,13 +37,15 @@ function createAssistantMessage(options?: {
 	text?: string;
 	stopReason?: AssistantMessage["stopReason"];
 	errorMessage?: string;
+	usage?: Partial<AssistantMessage["usage"]>;
+	model?: string;
 }): AssistantMessage {
 	return {
 		role: "assistant",
 		content: options?.text ? [{ type: "text", text: options.text }] : [],
 		api: "openai-responses",
 		provider: "openai",
-		model: "gpt-4o-mini",
+		model: options?.model ?? "gpt-4o-mini",
 		usage: {
 			input: 0,
 			output: 0,
@@ -51,6 +53,7 @@ function createAssistantMessage(options?: {
 			cacheWrite: 0,
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			...options?.usage,
 		},
 		stopReason: options?.stopReason ?? "stop",
 		errorMessage: options?.errorMessage,
@@ -126,7 +129,7 @@ describe("runPrintMode", () => {
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
 
-	it("emits session_shutdown and returns non-zero on assistant error", async () => {
+	it("emits session_shutdown and returns 3 on assistant error", async () => {
 		const runtimeHost = createRuntimeHost(
 			createAssistantMessage({ stopReason: "error", errorMessage: "provider failure" }),
 		);
@@ -137,7 +140,7 @@ describe("runPrintMode", () => {
 			mode: "text",
 		});
 
-		expect(exitCode).toBe(1);
+		expect(exitCode).toBe(3);
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
@@ -239,7 +242,7 @@ describe("runPrintMode --output-schema", () => {
 		expect(read()).toBe('{"status":"done","summary":"fixed"}\n');
 	});
 
-	it("exits 1 without printing when the attempt budget runs out", async () => {
+	it("exits 4 without printing when the attempt budget runs out", async () => {
 		const host = createScriptedHost([
 			createAssistantMessage({ text: "no json" }),
 			createAssistantMessage({ text: '{"status":"maybe"}' }),
@@ -250,9 +253,23 @@ describe("runPrintMode --output-schema", () => {
 
 		const exitCode = await runPrintMode(host as never, { mode: "text", outputSchema: writeSchema() });
 
-		expect(exitCode).toBe(1);
+		expect(exitCode).toBe(4);
 		expect(host.session.prompt).toHaveBeenCalledTimes(2);
 		expect(read()).toBe("");
+	});
+
+	it("exits 3 when a schema retry hits a provider error", async () => {
+		const host = createScriptedHost([
+			createAssistantMessage({ text: "no json" }),
+			createAssistantMessage({ stopReason: "error", errorMessage: "rate limit" }),
+		]);
+		stdoutSpy();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", outputSchema: writeSchema() });
+
+		expect(exitCode).toBe(3);
+		expect(errorSpy).toHaveBeenCalledWith("rate limit");
 	});
 
 	it("exits 2 for an unreadable schema file", async () => {
@@ -341,7 +358,8 @@ describe("runPrintMode --progress-file", () => {
 			.trim()
 			.split("\n")
 			.map((l) => JSON.parse(l));
-		expect(lines.map((l) => l.type)).toEqual(["turn_start", "tool_execution_start", "tool_execution_end"]);
+		expect(lines.map((l) => l.type)).toEqual(["turn_start", "tool_execution_start", "tool_execution_end", "marker"]);
+		expect(lines[3].marker).toBe("usage");
 		expect(JSON.stringify(lines)).not.toContain("/secret");
 	});
 
@@ -388,5 +406,152 @@ describe("runPrintMode --progress-file", () => {
 			.split("\n")
 			.map((l) => JSON.parse(l));
 		expect(lines.some((l) => l.marker === "output_schema_retry" && l.attempt === 1)).toBe(true);
+	});
+});
+
+describe("summarizeUsage", () => {
+	it("aggregates assistant usage and dedupes models", () => {
+		const messages = [
+			{ role: "user" },
+			createAssistantMessage({
+				usage: {
+					input: 10,
+					output: 5,
+					totalTokens: 15,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+				},
+			}),
+			{ role: "toolResult" },
+			createAssistantMessage({
+				usage: {
+					input: 20,
+					output: 7,
+					totalTokens: 27,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+				},
+			}),
+		];
+		const summary = summarizeUsage(messages);
+		expect(summary.requests).toBe(2);
+		expect(summary.inputTokens).toBe(30);
+		expect(summary.outputTokens).toBe(12);
+		expect(summary.totalTokens).toBe(42);
+		expect(summary.costUsd).toBe(0.003);
+		expect(summary.models).toEqual(["openai/gpt-4o-mini"]);
+	});
+
+	it("excludes messages before startIndex (resumed history)", () => {
+		const history = createAssistantMessage({
+			usage: { input: 999, output: 999, totalTokens: 1998 },
+		});
+		const fresh = createAssistantMessage({ usage: { input: 3, output: 1, totalTokens: 4 } });
+		const summary = summarizeUsage([history, fresh], 1);
+		expect(summary.requests).toBe(1);
+		expect(summary.inputTokens).toBe(3);
+		expect(summary.totalTokens).toBe(4);
+	});
+});
+
+describe("runPrintMode usage reporting", () => {
+	function stdoutSpyLocal() {
+		let text = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
+			text += String(chunk);
+			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+			if (typeof callback === "function") (callback as (error?: Error | null) => void)(null);
+			return true;
+		}) as never);
+		return () => text;
+	}
+
+	/** Host whose prompt() pushes one assistant message carrying usage. */
+	function createUsageHost() {
+		const state: { messages: AssistantMessage[] } = { messages: [] };
+		const session = {
+			sessionManager: { getHeader: () => undefined },
+			agent: { waitForIdle: async () => {}, subscribe: vi.fn(() => () => {}) },
+			state,
+			extensionRunner: { hasHandlers: () => false, emit: vi.fn(async () => {}) },
+			bindExtensions: vi.fn(async () => {}),
+			subscribe: vi.fn(() => () => {}),
+			prompt: vi.fn(async () => {
+				state.messages.push(
+					createAssistantMessage({
+						text: "done",
+						usage: {
+							input: 100,
+							output: 42,
+							totalTokens: 142,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0123 },
+						},
+					}),
+				);
+			}),
+			reload: vi.fn(async () => {}),
+		};
+		return {
+			session,
+			newSession: vi.fn(async () => undefined),
+			fork: vi.fn(async () => ({ selectedText: "" })),
+			switchSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => {}),
+			setRebindSession: vi.fn(),
+		};
+	}
+
+	it("emits a PIRI_USAGE summary line on stderr", async () => {
+		const host = createUsageHost();
+		stdoutSpyLocal();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", initialMessage: "task" });
+
+		expect(exitCode).toBe(0);
+		const usageCall = errorSpy.mock.calls.map((c) => String(c[0])).find((line) => line.startsWith("PIRI_USAGE="));
+		expect(usageCall).toBeDefined();
+		const summary = JSON.parse(usageCall!.slice("PIRI_USAGE=".length));
+		expect(summary.requests).toBe(1);
+		expect(summary.inputTokens).toBe(100);
+		expect(summary.outputTokens).toBe(42);
+		expect(summary.totalTokens).toBe(142);
+		expect(summary.costUsd).toBe(0.0123);
+		expect(summary.models).toEqual(["openai/gpt-4o-mini"]);
+	});
+
+	it("writes a usage marker to the progress file", async () => {
+		const host = createUsageHost();
+		stdoutSpyLocal();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const path = join(mkdtempSync(join(tmpdir(), "pi-usage-progress-")), "progress.jsonl");
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", initialMessage: "task", progressFile: path });
+
+		expect(exitCode).toBe(0);
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		const marker = lines.find((l) => l.marker === "usage");
+		expect(marker).toBeDefined();
+		expect(marker.requests).toBe(1);
+		expect(marker.inputTokens).toBe(100);
+		expect(marker.costUsd).toBe(0.0123);
+	});
+
+	it("excludes messages that predate the run from the usage summary", async () => {
+		const host = createUsageHost();
+		host.session.state.messages = [
+			createAssistantMessage({ text: "old", usage: { input: 999, output: 999, totalTokens: 1998 } }),
+		] as never;
+		stdoutSpyLocal();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(host as never, { mode: "text", initialMessage: "task" });
+
+		expect(exitCode).toBe(0);
+		const usageCall = errorSpy.mock.calls.map((c) => String(c[0])).find((line) => line.startsWith("PIRI_USAGE="));
+		const summary = JSON.parse(usageCall!.slice("PIRI_USAGE=".length));
+		expect(summary.requests).toBe(1);
+		expect(summary.inputTokens).toBe(100);
 	});
 });
