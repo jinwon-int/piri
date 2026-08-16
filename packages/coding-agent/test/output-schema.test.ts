@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, repairRootAdditionalProperties } from "../src/modes/output-schema.ts";
+import {
+	buildSchemaFeedback,
+	compileOutputSchema,
+	extractJsonCandidate,
+	repairRootAdditionalProperties,
+} from "../src/modes/output-schema.ts";
 
 describe("extractJsonCandidate", () => {
 	it("returns a bare JSON object as-is", () => {
@@ -85,19 +90,21 @@ describe("repairRootAdditionalProperties (#1815 remove-only normalization)", () 
 	} as const;
 
 	it("drops root keys the closed schema does not allow", () => {
-		const repaired = repairRootAdditionalProperties(
-			closedSchema as never,
-			{ status: "done", summary: "ok", metadata: { long: "object" }, confidence: 0.9 },
-		);
+		const repaired = repairRootAdditionalProperties(closedSchema as never, {
+			status: "done",
+			summary: "ok",
+			metadata: { long: "object" },
+			confidence: 0.9,
+		});
 		expect(repaired?.value).toEqual({ status: "done", summary: "ok" });
 		expect(repaired?.droppedKeys).toEqual(["metadata", "confidence"]);
 	});
 
 	it("keeps nested content untouched — repair is root-only", () => {
-		const repaired = repairRootAdditionalProperties(
-			closedSchema as never,
-			{ status: "done", extra: { nested: { deep: true } } },
-		);
+		const repaired = repairRootAdditionalProperties(closedSchema as never, {
+			status: "done",
+			extra: { nested: { deep: true } },
+		});
 		expect(repaired?.value).toEqual({ status: "done" });
 	});
 

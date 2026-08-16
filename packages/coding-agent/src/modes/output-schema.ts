@@ -58,7 +58,7 @@ export function repairRootAdditionalProperties(schema: TSchema, value: unknown):
 	const droppedKeys: string[] = [];
 	const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
 	for (const key of Object.keys(copy)) {
-		if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+		if (!Object.hasOwn(properties, key)) {
 			delete copy[key];
 			droppedKeys.push(key);
 		}
