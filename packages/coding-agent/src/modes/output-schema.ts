@@ -24,6 +24,48 @@ export interface OutputSchemaValidator {
 	errors(value: unknown): string[];
 }
 
+export interface SchemaRepairResult {
+	/** Narrowed value with disallowed root keys removed. */
+	value: unknown;
+	/** Root keys the schema did not allow (bounded, metadata-only). */
+	droppedKeys: string[];
+}
+
+/**
+ * Deterministic, remove-only repair for root-level additionalProperties
+ * violations (a2a-nexus#1815 item 2). Field evidence (2026-08-16): the
+ * dominant schema-retry shape on the A2A analysis lanes is the model
+ * returning an otherwise-valid contract object plus extra root keys —
+ * "/: must not have additional properties" — which today burns a full
+ * provider resend to fix. When the schema explicitly closes the root
+ * (additionalProperties === false) and declares properties, delete the
+ * disallowed root keys and return the narrowed value.
+ *
+ * Safety contract: never adds, invents, coerces, or moves content; only
+ * deletes keys the schema forbids at the root. Callers MUST re-run
+ * validator.check on the result and fall back to the provider resend when
+ * it still fails (e.g. required fields missing). Nested objects are left
+ * untouched — root-only by design, matching the observed failure class.
+ * Returns undefined when no repair applies (non-object root, open schema,
+ * no declared properties, or nothing to drop).
+ */
+export function repairRootAdditionalProperties(schema: TSchema, value: unknown): SchemaRepairResult | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const objectSchema = schema as { additionalProperties?: unknown; properties?: Record<string, unknown> };
+	if (objectSchema.additionalProperties !== false) return undefined;
+	const properties = objectSchema.properties;
+	if (!properties || typeof properties !== "object") return undefined;
+	const droppedKeys: string[] = [];
+	const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+	for (const key of Object.keys(copy)) {
+		if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+			delete copy[key];
+			droppedKeys.push(key);
+		}
+	}
+	return droppedKeys.length > 0 ? { value: copy, droppedKeys } : undefined;
+}
+
 /**
  * Load a JSON Schema from disk. Throws on unreadable file or invalid JSON —
  * callers translate that into a usage error (exit code 2).

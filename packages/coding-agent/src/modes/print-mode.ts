@@ -11,7 +11,8 @@ import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
-import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, loadOutputSchema } from "./output-schema.ts";
+import { buildSchemaFeedback, compileOutputSchema, extractJsonCandidate, loadOutputSchema, repairRootAdditionalProperties } from "./output-schema.ts";
+import type { TSchema } from "typebox";
 import { openProgressFile, type ProgressFileWriter } from "./progress-file.ts";
 
 /**
@@ -130,6 +131,19 @@ function resolveOutputSchemaAttempts(): number {
 	return Math.min(parsed, OUTPUT_SCHEMA_MAX_ATTEMPTS);
 }
 
+/** Repaired-key names recorded on the progress marker (bounded, metadata-only). */
+const MAX_REPAIRED_KEY_NAMES = 8;
+const MAX_REPAIRED_KEY_LENGTH = 64;
+
+/** Deterministic remove-only repair is on by default; "0" disables it. */
+function schemaRepairEnabled(): boolean {
+	return process.env.PI_OUTPUT_SCHEMA_REPAIR !== "0";
+}
+
+function boundRepairKeyName(key: string): string {
+	return key.length > MAX_REPAIRED_KEY_LENGTH ? `${key.slice(0, MAX_REPAIRED_KEY_LENGTH)}…` : key;
+}
+
 /** Concatenate the text contents of an assistant message. */
 function assistantText(message: AssistantMessage): string {
 	let text = "";
@@ -151,8 +165,10 @@ async function emitSchemaValidatedOutput(
 	progress?: ProgressFileWriter,
 ): Promise<number> {
 	let validator: ReturnType<typeof compileOutputSchema>;
+	let schema: TSchema;
 	try {
-		validator = compileOutputSchema(await loadOutputSchema(schemaPath));
+		schema = await loadOutputSchema(schemaPath);
+		validator = compileOutputSchema(schema);
 	} catch (error: unknown) {
 		console.error(`Invalid --output-schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
 		return PRINT_EXIT.usageError;
@@ -175,6 +191,24 @@ async function emitSchemaValidatedOutput(
 					return PRINT_EXIT.success;
 				}
 				errors = validator.errors(value);
+				// a2a-nexus#1815 item 2: deterministic remove-only repair BEFORE
+				// any provider resend — the dominant retry shape (extra root keys
+				// under additionalProperties:false) is fixable locally. The repair
+				// only deletes schema-forbidden root keys; success still requires a
+				// full validator.check pass, so no generic wrapper or arbitrary JSON
+				// is promoted. Failures fall through to the resend below unchanged.
+				if (schemaRepairEnabled()) {
+					const repaired = repairRootAdditionalProperties(schema, value);
+					if (repaired && validator.check(repaired.value)) {
+						progress?.mark("output_schema_repaired", {
+							attempt,
+							dropped: repaired.droppedKeys.length,
+							keys: repaired.droppedKeys.slice(0, MAX_REPAIRED_KEY_NAMES).map(boundRepairKeyName),
+						});
+						writeRawStdout(`${JSON.stringify(repaired.value)}\n`);
+						return PRINT_EXIT.success;
+					}
+				}
 			} catch {
 				errors = ["output candidate was not parseable JSON"];
 			}
