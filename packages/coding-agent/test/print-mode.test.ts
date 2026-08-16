@@ -388,7 +388,7 @@ describe("runPrintMode --progress-file", () => {
 		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
 		const host = createProgressHost([]);
 		host.session.state.messages = [createAssistantMessage({ text: "not json" })] as never;
-		host.session.prompt = vi.fn(async () => {
+		host.session.prompt = vi.fn(async (..._args: unknown[]) => {
 			host.session.state.messages.push(createAssistantMessage({ text: '{"status":"done"}' }) as never);
 		}) as never;
 		stdoutSpyLocal();
@@ -406,6 +406,106 @@ describe("runPrintMode --progress-file", () => {
 			.split("\n")
 			.map((l) => JSON.parse(l));
 		expect(lines.some((l) => l.marker === "output_schema_retry" && l.attempt === 1)).toBe(true);
+	});
+
+	it("repairs extra root keys locally instead of re-prompting the provider (#1815)", async () => {
+		const schema = {
+			type: "object",
+			required: ["status", "summary"],
+			additionalProperties: false,
+			properties: { status: { type: "string", enum: ["done", "blocked"] }, summary: { type: "string" } },
+		};
+		const schemaDir = mkdtempSync(join(tmpdir(), "pi-schema-repair-"));
+		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
+		// The dominant deployed-field failure shape: a fully valid contract
+		// object plus extra root keys.
+		const host = createProgressHost([]);
+		host.session.state.messages = [
+			createAssistantMessage({ text: '{"status":"done","summary":"ok","confidence":0.9,"notes":"extra"}' }),
+		] as never;
+		const read = stdoutSpyLocal();
+		const path = progressPath();
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			outputSchema: join(schemaDir, "schema.json"),
+			progressFile: path,
+		});
+
+		expect(exitCode).toBe(0);
+		// No provider resend at all: the pre-seeded message was repaired locally.
+		expect(host.session.prompt).toHaveBeenCalledTimes(0);
+		expect(read()).toBe('{"status":"done","summary":"ok"}\n');
+		const lines = readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		const repaired = lines.find((l) => l.marker === "output_schema_repaired");
+		expect(repaired).toBeDefined();
+		expect(repaired.dropped).toBe(2);
+		expect(repaired.keys).toEqual(["confidence", "notes"]);
+		expect(lines.some((l) => l.marker === "output_schema_retry")).toBe(false);
+	});
+
+	it("falls back to the provider resend when repair cannot satisfy the schema", async () => {
+		const schema = {
+			type: "object",
+			required: ["status", "summary"],
+			additionalProperties: false,
+			properties: { status: { type: "string", enum: ["done", "blocked"] }, summary: { type: "string" } },
+		};
+		const schemaDir = mkdtempSync(join(tmpdir(), "pi-schema-repair-fallback-"));
+		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
+		// Extra keys AND a missing required field: repair alone cannot pass,
+		// so the loop must resend exactly as before.
+		const host = createProgressHost([]);
+		host.session.state.messages = [createAssistantMessage({ text: '{"status":"done","extra":1}' })] as never;
+		const resendMock = vi.fn(async (..._args: unknown[]) => {
+			host.session.state.messages.push(
+				createAssistantMessage({ text: '{"status":"done","summary":"fixed"}' }) as never,
+			);
+		});
+		host.session.prompt = resendMock as never;
+		stdoutSpyLocal();
+
+		const exitCode = await runPrintMode(host as never, {
+			mode: "text",
+			outputSchema: join(schemaDir, "schema.json"),
+		});
+
+		expect(exitCode).toBe(0);
+		expect(resendMock).toHaveBeenCalledTimes(1);
+		expect(String(resendMock.mock.calls[0][0])).toContain("did not satisfy the required output schema");
+	});
+
+	it("PI_OUTPUT_SCHEMA_REPAIR=0 disables the local repair", async () => {
+		const schema = {
+			type: "object",
+			required: ["status"],
+			additionalProperties: false,
+			properties: { status: { type: "string" } },
+		};
+		const schemaDir = mkdtempSync(join(tmpdir(), "pi-schema-repair-off-"));
+		writeFileSync(join(schemaDir, "schema.json"), JSON.stringify(schema));
+		const host = createProgressHost([]);
+		host.session.state.messages = [createAssistantMessage({ text: '{"status":"done","extra":1}' })] as never;
+		host.session.prompt = vi.fn(async (..._args: unknown[]) => {
+			host.session.state.messages.push(createAssistantMessage({ text: '{"status":"done"}' }) as never);
+		}) as never;
+		stdoutSpyLocal();
+		const previous = process.env.PI_OUTPUT_SCHEMA_REPAIR;
+		process.env.PI_OUTPUT_SCHEMA_REPAIR = "0";
+		try {
+			const exitCode = await runPrintMode(host as never, {
+				mode: "text",
+				outputSchema: join(schemaDir, "schema.json"),
+			});
+			expect(exitCode).toBe(0);
+			expect(host.session.prompt).toHaveBeenCalledTimes(1);
+		} finally {
+			if (previous === undefined) delete process.env.PI_OUTPUT_SCHEMA_REPAIR;
+			else process.env.PI_OUTPUT_SCHEMA_REPAIR = previous;
+		}
 	});
 });
 
