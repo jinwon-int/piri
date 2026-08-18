@@ -46,6 +46,9 @@ export type RpcCommand =
 	| { id?: string; type: "compact"; customInstructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
+	// System prompt
+	| { id?: string; type: "set_append_system_prompt"; text?: string | null }
+
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
 	| { id?: string; type: "abort_retry" }
@@ -89,6 +92,26 @@ export interface RpcSlashCommand {
 }
 
 // ============================================================================
+// RPC Protocol Versioning
+// ============================================================================
+
+/**
+ * Wire protocol version. Bumped when the RPC command/event contract changes in a way
+ * hosts need to negotiate. Hosts should read `protocolVersion` and `capabilities` from
+ * the `get_state` response and gate newer commands/events on them.
+ *
+ * - 1: compaction lifecycle events carry body-free identifiers (`sessionId`,
+ *   `compactionEntryId`, `firstKeptEntryId`) and `set_append_system_prompt` is available.
+ */
+export const RPC_PROTOCOL_VERSION = 1;
+
+/**
+ * Feature flags hosts can gate on. Prefer these over version sniffing when only one
+ * feature is needed.
+ */
+export const RPC_CAPABILITIES = ["compaction_lifecycle_identifiers", "set_append_system_prompt"] as const;
+
+// ============================================================================
 // RPC State
 // ============================================================================
 
@@ -105,6 +128,10 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	/** Wire protocol version. See RPC_PROTOCOL_VERSION. */
+	protocolVersion: number;
+	/** Supported feature flags. See RPC_CAPABILITIES. */
+	capabilities: string[];
 }
 
 // ============================================================================
@@ -170,6 +197,9 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
+
+	// System prompt
+	| { id?: string; type: "response"; command: "set_append_system_prompt"; success: true }
 
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }

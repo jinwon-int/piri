@@ -319,6 +319,17 @@ export class RpcClient {
 	}
 
 	/**
+	 * Set, replace, or clear the runtime-appended system prompt segment.
+	 *
+	 * Hosts use this to re-append or refresh bounded system context (e.g. a memory
+	 * snapshot) after a mid-session compaction. Pass no `text` to clear the segment.
+	 * Requires the `set_append_system_prompt` capability (see `getState()`).
+	 */
+	async setAppendSystemPrompt(text?: string): Promise<void> {
+		await this.send({ type: "set_append_system_prompt", text });
+	}
+
+	/**
 	 * Set auto-retry enabled/disabled.
 	 */
 	async setAutoRetry(enabled: boolean): Promise<void> {
