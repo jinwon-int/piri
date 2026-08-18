@@ -4,7 +4,7 @@
 
 import { GITHUB_COPILOT_MODELS } from "../../providers/github-copilot.models.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
-import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { abortableSleep, pollOAuthDeviceCodeFlow } from "./device-code.ts";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("SXYxLmI1MDdhMDhjODdlY2ZlOTg=");
@@ -16,6 +16,8 @@ const COPILOT_HEADERS = {
 	"Copilot-Integration-Id": "vscode-chat",
 } as const;
 const COPILOT_API_VERSION = "2026-06-01";
+const MAX_RETRY_AFTER_MS = 10_000;
+const DEFAULT_RETRY_AFTER_MS = 1_000;
 
 type DeviceCodeResponse = {
 	device_code: string;
@@ -89,28 +91,27 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
-function isSelectableCopilotModel(item: Record<string, unknown>): boolean {
-	const policy = asRecord(item.policy);
-	const capabilities = asRecord(item.capabilities);
-	const supports = asRecord(capabilities?.supports);
-	return item.model_picker_enabled === true && policy?.state !== "disabled" && supports?.tool_calls !== false;
-}
-
-function parseAvailableCopilotModelIds(raw: unknown): string[] {
+function parseAvailableCopilotModelIds(raw: unknown, allowPolicyFallback: boolean): string[] {
 	const data = asRecord(raw)?.data;
 	if (!Array.isArray(data)) {
 		throw new Error("Invalid Copilot models response");
 	}
 
-	const ids: string[] = [];
+	const pickerIds: string[] = [];
+	const policyEnabledIds: string[] = [];
 	for (const rawItem of data) {
 		const item = asRecord(rawItem);
 		const id = item?.id;
-		if (typeof id === "string" && item && isSelectableCopilotModel(item)) {
-			ids.push(id);
-		}
+		if (!item || typeof id !== "string") continue;
+
+		const capabilities = asRecord(item.capabilities);
+		const supports = asRecord(capabilities?.supports);
+		if (supports?.tool_calls === false) continue;
+		const policy = asRecord(item.policy);
+		if (item.model_picker_enabled === true && policy?.state !== "disabled") pickerIds.push(id);
+		if (policy?.state === "enabled") policyEnabledIds.push(id);
 	}
-	return ids;
+	return pickerIds.length > 0 || !allowPolicyFallback ? pickerIds : policyEnabledIds;
 }
 
 async function fetchAvailableGitHubCopilotModelIds(
@@ -119,16 +120,37 @@ async function fetchAvailableGitHubCopilotModelIds(
 	signal: AbortSignal,
 ): Promise<string[]> {
 	const baseUrl = getGitHubCopilotBaseUrl(copilotToken, enterpriseDomain);
-	const raw = await fetchJson(`${baseUrl}/models`, {
-		headers: {
-			Accept: "application/json",
-			Authorization: `Bearer ${copilotToken}`,
-			...COPILOT_HEADERS,
-			"X-GitHub-Api-Version": COPILOT_API_VERSION,
-		},
-		signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-	});
-	return parseAvailableCopilotModelIds(raw);
+	// Some Individual accounts return false for every picker flag despite explicit enabled policies.
+	// Limit the fallback to that endpoint so other account types keep strict picker semantics.
+	const allowPolicyFallback = baseUrl === "https://api.individual.githubcopilot.com";
+	const request = () =>
+		fetch(`${baseUrl}/models`, {
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bearer ${copilotToken}`,
+				...COPILOT_HEADERS,
+				"X-GitHub-Api-Version": COPILOT_API_VERSION,
+			},
+			signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+		});
+
+	// The login-time policy updates can drain the Copilot API rate-limit bucket, in which case
+	// this request is rejected with 429. Honor Retry-After and retry once instead of failing.
+	let response = await request();
+	if (response.status === 429) {
+		const retryAfterSeconds = Number(response.headers.get("retry-after"));
+		const waitMs =
+			Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+				? Math.min(retryAfterSeconds * 1000, MAX_RETRY_AFTER_MS)
+				: DEFAULT_RETRY_AFTER_MS;
+		await abortableSleep(waitMs, signal, "Login cancelled");
+		response = await request();
+	}
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(`${response.status} ${response.statusText}: ${text}`);
+	}
+	return parseAvailableCopilotModelIds(await response.json(), allowPolicyFallback);
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
@@ -341,12 +363,9 @@ async function enableAllGitHubCopilotModels(
 	enterpriseDomain: string | undefined,
 	signal: AbortSignal,
 ): Promise<void> {
-	const models = Object.values(GITHUB_COPILOT_MODELS);
-	await Promise.all(
-		models.map(async (model) => {
-			await enableGitHubCopilotModel(token, model.id, enterpriseDomain, signal);
-		}),
-	);
+	for (const model of Object.values(GITHUB_COPILOT_MODELS)) {
+		await enableGitHubCopilotModel(token, model.id, enterpriseDomain, signal);
+	}
 }
 
 async function loginGitHubCopilot(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
@@ -397,6 +416,7 @@ function copilotEnterpriseDomain(credential: OAuthCredential): string | undefine
 
 export const githubCopilotOAuth: OAuthAuth = {
 	name: "GitHub Copilot",
+	isSubscription: true,
 	login: loginGitHubCopilot,
 	refresh: (credential, signal) =>
 		refreshGitHubCopilotToken(credential.refresh, copilotEnterpriseDomain(credential), signal),

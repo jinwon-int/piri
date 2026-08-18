@@ -1,3 +1,15 @@
+<p align="center">
+  <a href="https://pi.dev">
+    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
+  </a>
+</p>
+<p align="center">
+  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
+  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
+</p>
+
+> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 # Piri Agent Harness
 
 Piri is a downstream distribution of the [Pi agent harness](https://github.com/earendil-works/pi), adapted for ccc-node and a multi-provider subscription runtime.
@@ -29,6 +41,7 @@ For upstream Pi documentation:
 
 | Package | Description |
 |---------|-------------|
+| **[@earendil-works/pi-telemetry](packages/telemetry)** | Vendor-neutral telemetry contracts, reference adapter, conformance tests, and typed schemas |
 | **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
 | **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
 | **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
@@ -59,8 +72,7 @@ npm run build:offline # Same as build (kept as the explicit offline alias used b
 npm run generate:models # Refresh the checked-in model catalog from models.dev (explicit; commit the diff separately)
 npm run check         # Lint, format, and type check
 ./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./piri-test.sh       # Run Piri from sources (can be run from any directory)
-./pi-test.sh         # Run the upstream-compatible source launcher
+./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
 
 ## Building standalone binaries from release source

@@ -154,9 +154,7 @@ describe("AI Providers Abort Tests", () => {
 	});
 
 	describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("Anthropic Provider Abort", () => {
-		// claude-opus-4-5: present in both the checked-in and the regenerated
-		// model catalog (upstream dropped the dated 4-1 snapshot ids).
-		const llm = getModel("anthropic", "claude-opus-4-5");
+		const llm = getModel("anthropic", "claude-sonnet-4-6");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
@@ -265,6 +263,18 @@ describe("AI Providers Abort Tests", () => {
 
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Provider Abort", () => {
 		const llm = getModel("qwen-token-plan", "qwen3.7-max");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
+	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Individual Provider Abort", () => {
+		const llm = getModel("qwen-token-plan-individual", "qwen3.8-max");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm);
