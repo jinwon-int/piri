@@ -152,7 +152,12 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| {
+			type: "compaction_start";
+			reason: "manual" | "threshold" | "overflow";
+			/** Session that is compacting. Body-free identifier for host-side checkpoint correlation. */
+			sessionId: string;
+	  }
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
@@ -163,6 +168,16 @@ export type AgentSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
+			/** Session that compacted. Body-free identifier for host-side checkpoint correlation. */
+			sessionId: string;
+			/** Id of the persisted compaction entry. Present only when a compaction entry was saved. */
+			compactionEntryId?: string;
+			/**
+			 * First kept entry id of the persisted compaction. Present only when a compaction entry
+			 * was saved. Mirrors `result.firstKeptEntryId` so hosts can correlate checkpoints
+			 * without reading the summary body.
+			 */
+			firstKeptEntryId?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
@@ -374,6 +389,12 @@ export class AgentSession {
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
+	/**
+	 * Host-controlled system prompt segment appended after loader-provided `--append-system-prompt`
+	 * segments. Set via `setRuntimeAppendSystemPrompt()` (RPC `set_append_system_prompt`). Survives
+	 * compaction and tool/system-prompt rebuilds until replaced or cleared.
+	 */
+	private _runtimeAppendSystemPrompt?: string;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -896,6 +917,37 @@ export class AgentSession {
 		return this.agent.state.systemPrompt;
 	}
 
+	/** Current runtime-appended system prompt segment, if one is set. */
+	get runtimeAppendSystemPrompt(): string | undefined {
+		return this._runtimeAppendSystemPrompt;
+	}
+
+	/**
+	 * Set, replace, or clear a host-controlled system prompt segment that is appended after
+	 * loader-provided `--append-system-prompt` segments.
+	 *
+	 * This is the supported way for RPC/JSON hosts (e.g. ccc-node) to re-append or refresh
+	 * bounded system context — such as an audience-scoped memory snapshot — after a
+	 * mid-session compaction, without a cold resume. The segment is part of the base system
+	 * prompt, so it survives compaction and tool-set rebuilds. A per-turn extension system
+	 * prompt override (`before_agent_start`) still takes precedence for its turn; the new
+	 * segment applies from the next turn.
+	 *
+	 * The segment is runtime-only state: it is not persisted to the session file and is reset
+	 * when the host starts or switches sessions (hosts re-materialize their context then).
+	 *
+	 * @param text Segment text. Empty or `undefined` clears the segment.
+	 */
+	setRuntimeAppendSystemPrompt(text?: string): void {
+		const normalized = text && text.trim().length > 0 ? text : undefined;
+		if (normalized === this._runtimeAppendSystemPrompt) {
+			return;
+		}
+		this._runtimeAppendSystemPrompt = normalized;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
 	/** Current retry attempt (0 if not retrying) */
 	get retryAttempt(): number {
 		return this._retryAttempt;
@@ -1045,8 +1097,10 @@ export class AgentSession {
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt =
-			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		const appendSegments = this._runtimeAppendSystemPrompt
+			? [...loaderAppendSystemPrompt, this._runtimeAppendSystemPrompt]
+			: loaderAppendSystemPrompt;
+		const appendSystemPrompt = appendSegments.length > 0 ? appendSegments.join("\n\n") : undefined;
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -1807,7 +1861,7 @@ export class AgentSession {
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
-		this._emit({ type: "compaction_start", reason: "manual" });
+		this._emit({ type: "compaction_start", reason: "manual", sessionId: this.sessionId });
 		let fromExtension = false;
 
 		try {
@@ -1893,7 +1947,14 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -1930,6 +1991,9 @@ export class AgentSession {
 				result: compactionResult,
 				aborted: false,
 				willRetry: false,
+				sessionId: this.sessionId,
+				compactionEntryId,
+				firstKeptEntryId,
 			});
 			return compactionResult;
 		} catch (error) {
@@ -1944,6 +2008,7 @@ export class AgentSession {
 				aborted,
 				willRetry: false,
 				errorMessage,
+				sessionId: this.sessionId,
 			});
 			await this._emitSessionCompactFailed({
 				reason: "manual",
@@ -2045,6 +2110,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					errorMessage,
+					sessionId: this.sessionId,
 				});
 				await this._emitSessionCompactFailed({
 					reason: "overflow",
@@ -2126,7 +2192,7 @@ export class AgentSession {
 				return false;
 			}
 
-			this._emit({ type: "compaction_start", reason });
+			this._emit({ type: "compaction_start", reason, sessionId: this.sessionId });
 			this._autoCompactionAbortController = new AbortController();
 			started = true;
 
@@ -2150,6 +2216,7 @@ export class AgentSession {
 						result: undefined,
 						aborted: true,
 						willRetry: false,
+						sessionId: this.sessionId,
 					});
 					await this._emitSessionCompactFailed({
 						reason,
@@ -2209,6 +2276,7 @@ export class AgentSession {
 					result: undefined,
 					aborted: true,
 					willRetry: false,
+					sessionId: this.sessionId,
 				});
 				await this._emitSessionCompactFailed({
 					reason,
@@ -2219,7 +2287,14 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2248,7 +2323,16 @@ export class AgentSession {
 				usage,
 				details,
 			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			this._emit({
+				type: "compaction_end",
+				reason,
+				result,
+				aborted: false,
+				willRetry,
+				sessionId: this.sessionId,
+				compactionEntryId,
+				firstKeptEntryId,
+			});
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -2280,6 +2364,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					errorMessage: formattedErrorMessage,
+					sessionId: this.sessionId,
 				});
 				await this._emitSessionCompactFailed({
 					reason,

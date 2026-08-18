@@ -24,7 +24,7 @@ type JsonAgentSessionEvent =
     };
 ```
 
-`queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction.
+`queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction and carry body-free identifiers (`sessionId`, plus `compactionEntryId`/`firstKeptEntryId` on successful completion) so hosts can correlate checkpoints; see [RPC mode — compaction_start / compaction_end](./rpc.md#compaction_start--compaction_end).
 
 Other base events come from
 [`AgentEvent`](https://github.com/earendil-works/pi-mono/blob/main/packages/agent/src/types.ts):

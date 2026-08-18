@@ -29,13 +29,15 @@ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type {
-	RpcCommand,
-	RpcExtensionUIRequest,
-	RpcExtensionUIResponse,
-	RpcResponse,
-	RpcSessionState,
-	RpcSlashCommand,
+import {
+	RPC_CAPABILITIES,
+	RPC_PROTOCOL_VERSION,
+	type RpcCommand,
+	type RpcExtensionUIRequest,
+	type RpcExtensionUIResponse,
+	type RpcResponse,
+	type RpcSessionState,
+	type RpcSlashCommand,
 } from "./rpc-types.ts";
 
 // Re-export types for consumers
@@ -457,6 +459,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					protocolVersion: RPC_PROTOCOL_VERSION,
+					capabilities: [...RPC_CAPABILITIES],
 				};
 				return success(id, "get_state", state);
 			}
@@ -536,6 +540,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);
 				return success(id, "set_auto_compaction");
+			}
+
+			// =================================================================
+			// System prompt
+			// =================================================================
+
+			case "set_append_system_prompt": {
+				session.setRuntimeAppendSystemPrompt(
+					typeof command.text === "string" && command.text.trim().length > 0 ? command.text : undefined,
+				);
+				return success(id, "set_append_system_prompt");
 			}
 
 			// =================================================================

@@ -185,12 +185,23 @@ Response:
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
     "messageCount": 5,
-    "pendingMessageCount": 0
+    "pendingMessageCount": 0,
+    "protocolVersion": 1,
+    "capabilities": ["compaction_lifecycle_identifiers", "set_append_system_prompt"]
   }
 }
 ```
 
 The `model` field is a full [Model](#model) object or `null`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+
+`protocolVersion` and `capabilities` let hosts negotiate the wire contract instead of sniffing versions:
+
+- `protocolVersion` is `1` when compaction lifecycle events carry body-free identifiers and `set_append_system_prompt` is available.
+- `capabilities` lists individual feature flags so a host can gate exactly one feature:
+  - `compaction_lifecycle_identifiers` — `compaction_start`/`compaction_end` include `sessionId`; a successful `compaction_end` also includes `compactionEntryId` and `firstKeptEntryId`.
+  - `set_append_system_prompt` — the host may re-append or refresh bounded system context at runtime.
+
+Hosts that need post-compaction context reinjection (e.g. ccc-node memory snapshots) should check for `set_append_system_prompt`; when it is absent (older builds), the supported fallback is a cold resume: start a new RPC process with `--append-system-prompt`.
 
 #### get_messages
 
@@ -422,6 +433,31 @@ Response:
 ```json
 {"type": "response", "command": "set_auto_compaction", "success": true}
 ```
+
+#### set_append_system_prompt
+
+Set, replace, or clear a host-controlled system prompt segment at runtime. The segment is appended after any `--append-system-prompt` segments and becomes part of the base system prompt, so it **survives compaction** and tool-set rebuilds. This is the supported way to re-append or refresh bounded system context — for example an audience-scoped memory snapshot — after a mid-session compaction, without a cold resume.
+
+```json
+{"type": "set_append_system_prompt", "text": "## Memory\n..."}
+```
+
+Omit `text` (or pass `null`/empty) to clear the segment:
+
+```json
+{"type": "set_append_system_prompt"}
+```
+
+Response:
+```json
+{"type": "response", "command": "set_append_system_prompt", "success": true}
+```
+
+Notes:
+
+- The segment applies from the next turn; a per-turn extension system prompt override (`before_agent_start`) still wins for its own turn.
+- The segment is runtime-only state. It is not persisted to the session file and resets on `new_session`/`switch_session`; hosts are expected to re-materialize their context then (same as startup).
+- Requires the `set_append_system_prompt` capability (see [`get_state`](#get_state)). On older builds without it, the fallback is a cold resume with `--append-system-prompt`.
 
 ### Retry
 
@@ -1042,10 +1078,10 @@ Emitted whenever the pending steering or follow-up queue changes.
 Emitted when compaction runs, whether manual or automatic.
 
 ```json
-{"type": "compaction_start", "reason": "threshold"}
+{"type": "compaction_start", "reason": "threshold", "sessionId": "abc123"}
 ```
 
-The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
+The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`. `sessionId` identifies the compacting session, so hosts can correlate checkpoints without parsing message bodies.
 
 ```json
 {
@@ -1067,11 +1103,16 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
     "details": {}
   },
   "aborted": false,
-  "willRetry": false
+  "willRetry": false,
+  "sessionId": "abc123",
+  "compactionEntryId": "def456",
+  "firstKeptEntryId": "abc123"
 }
 ```
 
 If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt.
+
+On success, `compactionEntryId` is the id of the persisted compaction entry and `firstKeptEntryId` mirrors `result.firstKeptEntryId`; both are top-level so hosts can key an idempotent checkpoint on `(sessionId, compactionEntryId)` without reading the summary body. Both are omitted when compaction aborted or failed (`aborted: true`, or `errorMessage` set). The persisted entry itself is available via `get_entries`.
 
 If compaction was aborted, `result` is `null` and `aborted` is `true`.
 
