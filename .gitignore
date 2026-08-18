@@ -8,9 +8,12 @@ dist/
 packages/*/dist/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
-packages/ai/src/providers/data/
 packages/ai/src/providers/.model-generation-*/
 *.cpuprofile
+
+# piri distribution ships the frozen provider model catalogs (data/) so a fresh
+# clone is runnable without re-running model generation against each provider.
+# (Upstream Pi gitignores these because it regenerates them; piri freezes them.)
 
 # Environment
 .env
