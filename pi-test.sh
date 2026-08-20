@@ -54,4 +54,15 @@ if [[ "$NO_ENV" == "true" ]]; then
   echo "Running without API keys..."
 fi
 
-"$SCRIPT_DIR/node_modules/.bin/tsx" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+[[ -n "$NODE_BIN" ]] || {
+  printf 'node not found in PATH\n' >&2
+  exit 127
+}
+TSX_CLI="$SCRIPT_DIR/node_modules/tsx/dist/cli.mjs"
+[[ -f "$TSX_CLI" && -r "$TSX_CLI" ]] || {
+  printf 'tsx not found at %s. Run npm install from the repo root first.\n' "$TSX_CLI" >&2
+  exit 127
+}
+
+"$NODE_BIN" "$TSX_CLI" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}

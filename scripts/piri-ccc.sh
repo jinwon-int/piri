@@ -63,4 +63,41 @@ if [[ -n "$bootstrap_file" ]]; then
 	launcher_args+=(--append-system-prompt "$bootstrap_file")
 fi
 
+# Android/Termux does not provide /usr/bin/env. libtermux-exec normally
+# repairs that shebang at exec time, but ccc-node deliberately drops its
+# LD_PRELOAD hook in isolated subprocess environments. Resolve env shebangs
+# before exec so the launcher works in both inherited and stripped contexts.
+if [[ "$(head -c 2 -- "$cli" 2>/dev/null || true)" == "#!" ]]; then
+	IFS= read -r shebang_line < "$cli" || true
+	shebang_line="${shebang_line%$'\r'}"
+	shebang_body="${shebang_line:2}"
+	shebang_body="${shebang_body#"${shebang_body%%[![:space:]]*}"}"
+	shebang_path="${shebang_body%%[[:space:]]*}"
+	if [[ "${shebang_path##*/}" == "env" ]]; then
+		shebang_args="${shebang_body#"$shebang_path"}"
+		shebang_args="${shebang_args#"${shebang_args%%[![:space:]]*}"}"
+		split_args=false
+		if [[ "$shebang_args" == "-S "* ]]; then
+			split_args=true
+			shebang_args="${shebang_args#-S }"
+		fi
+		read -r -a shebang_words <<< "$shebang_args"
+		(( ${#shebang_words[@]} > 0 )) || fail "PIRI_CLI_PATH has an empty env shebang"
+		if [[ "$split_args" == "false" && ${#shebang_words[@]} -ne 1 ]]; then
+			fail "PIRI_CLI_PATH env shebang arguments require env -S"
+		fi
+		shebang_command="${shebang_words[0]}"
+		[[ "$shebang_command" != */* && "$shebang_command" != -* ]] ||
+			fail "PIRI_CLI_PATH env shebang command is invalid"
+		for shebang_argument in "${shebang_words[@]:1}"; do
+			[[ "$shebang_argument" =~ ^[A-Za-z0-9_./:=+,@%-]+$ ]] ||
+				fail "PIRI_CLI_PATH env -S argument is unsupported"
+		done
+		shebang_interpreter="$(command -v "$shebang_command" 2>/dev/null || true)"
+		[[ -n "$shebang_interpreter" ]] ||
+			fail "PIRI_CLI_PATH env shebang interpreter was not found"
+		exec "$shebang_interpreter" "${shebang_words[@]:1}" "$cli" "${launcher_args[@]}" "$@"
+	fi
+fi
+
 exec "$cli" "${launcher_args[@]}" "$@"
