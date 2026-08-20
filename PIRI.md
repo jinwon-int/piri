@@ -62,6 +62,12 @@ safe consumption at session start. Transcript extraction and Wiki/Honcho/local
 writeback remain ccc-node responsibilities and are not implied by this read
 bootstrap.
 
+The launcher resolves `#!/.../env <interpreter>` CLI shebangs through `PATH`
+before exec. This is required on Termux when an isolated ccc-node subprocess
+does not inherit libtermux-exec's `LD_PRELOAD` hook and Android therefore
+cannot resolve `/usr/bin/env`. The source launcher similarly invokes tsx's
+module through the resolved `node` binary instead of its `.bin` env shebang.
+
 ### Where this launcher sits in the ccc-node chain
 
 ccc-node does not call this launcher directly. It calls its own `ccc-piri`
