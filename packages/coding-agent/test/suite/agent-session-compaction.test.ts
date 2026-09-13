@@ -457,6 +457,7 @@ describe("AgentSession compaction characterization", () => {
 			fauxAssistantMessage(fauxToolCall("large_result", {}), { stopReason: "toolUse" }),
 			(context) => {
 				order.push("provider");
+				expect(context.systemPrompt).toContain("SYNC-MEMORY");
 				resumedRequest = JSON.stringify(context.messages);
 				return fauxAssistantMessage("finished after compaction");
 			},
@@ -465,6 +466,8 @@ describe("AgentSession compaction characterization", () => {
 		await harness.session.prompt("seed old history");
 		await harness.session.prompt("seed recent history");
 		const agentStartsBefore = harness.eventsOfType("agent_start").length;
+		harness.session.setRuntimeAppendSystemPrompt("SYNC-MEMORY");
+		harness.session.setActiveToolsByName(["large_result"]);
 		await harness.session.prompt("run the large tool");
 
 		expect(order).toEqual(["compaction", "provider"]);
@@ -472,6 +475,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.eventsOfType("compaction_start").at(-1)).toEqual({
 			type: "compaction_start",
 			reason: "threshold",
+			sessionId: harness.session.sessionId,
 		});
 		expect(resumedRequest).toContain("compacted history");
 		expect(resumedRequest).toContain("large-tool-result");
