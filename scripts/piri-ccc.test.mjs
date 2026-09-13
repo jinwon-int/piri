@@ -161,7 +161,7 @@ test("pi-test invokes the tsx module through node instead of its env shebang", a
 		assert.deepEqual(JSON.parse(result.stdout), [
 			"--tsconfig",
 			join(root, "tsconfig.json"),
-			join(root, "packages", "coding-agent", "src", "cli.ts"),
+			join(root, "packages", "coding-agent", "src", "experimental", "cli.ts"),
 			"--mode",
 			"rpc",
 		]);

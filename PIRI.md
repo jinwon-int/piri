@@ -93,6 +93,39 @@ Use `PIRI_BOOTSTRAP_CONTEXT_FILE` only where Piri runs without the wrapper.
 
 Piri changes should stay in small, clearly owned surfaces. Provider fixes and generally useful harness improvements should be suitable for upstreaming. Piri-only policy, branding, Telegram behavior, and ccc-node integration remain downstream.
 
+The imported upstream snapshot is **Pi v0.85.1**
+(`d981de1229ef899957bbe968bc8dcda02a21f477`). The previous import was
+`e5dde9a76` (v0.84.2 plus 37 commits), not the v0.84.2 tag itself. Piri uses
+squashed imports; use this recorded snapshot as the three-way base for the
+next sync rather than assuming shared Git ancestry.
+
+Keep these downstream contracts when importing upstream:
+
+- Piri identity, `.piri` state, and both `piri`/`pi` command aliases. Both npm
+  aliases now use upstream's bundled CLI; the ccc launcher retains its
+  supported unbundled `dist/cli.js` entrypoint.
+- `--output-schema` validation and remove-only repair, `--progress-file`,
+  stable print exit codes, and `PIRI_USAGE` output.
+- RPC capability discovery, compaction lifecycle/entry IDs, and
+  `set_append_system_prompt` across compaction and tool changes.
+- Safe bootstrap consumption and Termux interpreter resolution, including
+  the source-only experimental `pi-test.sh` entrypoint.
+- Checked-in provider data and offline builds (including upstream's new
+  `chord` package); no network catalog generation during build.
+
+The frozen provider data for this import comes from the published
+`@earendil-works/pi-ai@0.85.1` tarball, not a regeneration against today's
+provider catalogs. Its npm integrity is
+`sha512-+VgVIJDkDO2efYJKEEqvPTH4zmnIaXdAppGbO+vKFA9qy5PdhFiAenuFAkU+oiCSfOC4dMHDyrjdQeL4ZoC5CQ==`.
+Both the tarball integrity and the embedded manifest's individual JSON hashes
+were verified before importing `dist/providers/data/` into the checked-in
+source data directory. Keeping the old snapshot passed structural validation
+but failed type checking against the new provider APIs/model IDs; catalog
+validation alone is therefore not an adequate sync gate.
+
+Do not replace this distribution with an upstream npm install. Importing
+source does not deploy it or authorize service restarts.
+
 ## Deployment (this repo → a node)
 
 This repo (`jinwon-int/piri`) is the canonical source for the Piri distribution.

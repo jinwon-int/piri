@@ -65,4 +65,4 @@ TSX_CLI="$SCRIPT_DIR/node_modules/tsx/dist/cli.mjs"
   exit 127
 }
 
-"$NODE_BIN" "$TSX_CLI" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
+"$NODE_BIN" "$TSX_CLI" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/experimental/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
