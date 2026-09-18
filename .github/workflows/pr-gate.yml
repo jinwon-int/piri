@@ -1,6 +1,7 @@
 name: PR Gate
 
 on:
+  merge_group:
   # `check-contributor` is a required status check on `main`, and required checks are
   # evaluated against the PR head SHA. Triggering on `opened` alone means any later push
   # to the branch produces a head SHA this gate never reported on, leaving the PR
