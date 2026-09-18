@@ -18,6 +18,10 @@ on:
 
 jobs:
   check-contributor:
+    # merge_group(머지큐 엔트리)에는 pull_request 컨텍스트가 없어 이 잡이 실패한다.
+    # 기여자 게이트는 원래 PR(pull_request_target)에서 이미 검증되므로 큐에서는 건너뛴다.
+    # skipped required check는 머지큐에서 통과로 처리된다.
+    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     permissions:
       contents: read
