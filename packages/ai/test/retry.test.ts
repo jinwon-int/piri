@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
-import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
+import {
+	isRetryableAssistantError,
+	isTerminalProviderLimitError,
+	type RetryPolicy,
+	retryAssistantCall,
+} from "../src/utils/retry.ts";
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -219,5 +224,46 @@ describe("retryAssistantCall", () => {
 		expect(res.errorMessage).toBeUndefined();
 		expect(produce).toHaveBeenCalledTimes(1);
 		expect(onRetryFinished).toHaveBeenCalledWith(false, 1, "terminated");
+	});
+	const err = (text: string) => fauxAssistantMessage("", { stopReason: "error", errorMessage: text });
+
+	it("retries a Bedrock throttle instead of failing the turn", () => {
+		// Neither overflow nor retryable before: the throttle guard in overflow.ts
+		// stopped compaction, and nothing here matched, so it became a hard failure.
+		expect(isRetryableAssistantError(err("Throttling error: Too many tokens, please wait before trying again."))).toBe(
+			true,
+		);
+		expect(isRetryableAssistantError(err("ThrottlingException: Rate exceeded"))).toBe(true);
+		// the bare core carries no "throttl" token to match on
+		expect(isRetryableAssistantError(err("Too many tokens, please wait before trying again."))).toBe(true);
+	});
+
+	it("does not retry an account usage limit whatever the reset window", () => {
+		// "Monthly usage limit reached" was matched literally, so rolling windows
+		// were retried against a wall that clears hours later.
+		expect(
+			isRetryableAssistantError(
+				err('429: {"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-08-18 14:00"}'),
+			),
+		).toBe(false);
+		expect(isRetryableAssistantError(err("You have hit your ChatGPT usage limit"))).toBe(false);
+		expect(isRetryableAssistantError(err("Monthly usage limit reached"))).toBe(false);
+	});
+
+	it("does not read a status code out of an unrelated number", () => {
+		// `502` used to match the token count here, making a hard overflow retryable.
+		expect(
+			isRetryableAssistantError(err("Input length (265029) exceeds model's maximum context length (262144).")),
+		).toBe(false);
+		// real statuses still match
+		expect(isRetryableAssistantError(err("HTTP 502 Bad Gateway"))).toBe(true);
+		expect(isRetryableAssistantError(err("429: rate limited"))).toBe(true);
+		expect(isRetryableAssistantError(err("status code 503"))).toBe(true);
+	});
+
+	it("shares one terminal-limit list with the Codex raw-fetch path", () => {
+		expect(isTerminalProviderLimitError("insufficient_quota")).toBe(true);
+		expect(isTerminalProviderLimitError("You have hit your ChatGPT usage limit")).toBe(true);
+		expect(isTerminalProviderLimitError("503 service unavailable")).toBe(false);
 	});
 });
