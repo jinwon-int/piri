@@ -70,11 +70,27 @@ const OVERFLOW_PATTERNS = [
  * Example: Bedrock formats throttling errors as "ThrottlingException: Too many tokens,
  * please wait before trying again." which would match the /too many tokens/i overflow
  * pattern without this exclusion.
+ *
+ * The prefix anchors below are deliberate and must stay: a genuine overflow is
+ * routinely wrapped in an unrelated envelope ("Error: 503
+ * litellm.ServiceUnavailableError: ... exceeds the model's maximum context
+ * length"), and an unanchored /service.?unavailable/ would reject it. Prefix
+ * anchoring is how this guard distinguishes "the provider said X" from
+ * "something upstream mentioned X".
+ *
+ * But anchoring alone did not cover throttles. The comment above quotes
+ * "ThrottlingException: ...", which `/^(Throttling error|...)/` cannot match,
+ * and `formatBedrockError` also emits the core text with no prefix at all. Both
+ * forms fell through to /too many tokens/i and were read as context overflow —
+ * and the recovery for overflow is compaction, so a throttle silently discarded
+ * conversation history. The added pattern matches the throttle's own wording
+ * instead of its prefix; no genuine overflow asks the caller to wait and retry.
  */
 const NON_OVERFLOW_PATTERNS = [
 	/^(Throttling error|Service unavailable):/i, // AWS Bedrock non-overflow errors (human-readable prefixes from formatBedrockError)
 	/rate limit/i, // Generic rate limiting
 	/too many requests/i, // Generic HTTP 429 style
+	/too many tokens,\s*please wait/i, // Bedrock throttle core, at any prefix or none
 ];
 
 /**

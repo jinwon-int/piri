@@ -174,4 +174,20 @@ describe("isContextOverflow", () => {
 		const message = createLengthStopMessage({ input: 100, cacheRead: 0, output: 0 });
 		expect(isContextOverflow(message, 200000)).toBe(false);
 	});
+	// A throttle must never be mistaken for an overflow: the recovery for overflow
+	// is compaction, which discards conversation history. `formatBedrockError`
+	// emits this text prefixed, raw, and bare, so the guard cannot be anchored.
+	it.each([
+		["formatted prefix", "Throttling error: Too many tokens, please wait before trying again."],
+		["raw SDK exception name", "ThrottlingException: Too many tokens, please wait before trying again."],
+		["bare core text", "Too many tokens, please wait before trying again."],
+		["other exception prefix", "ModelNotReadyException: Too many tokens, please wait before trying again."],
+	])("does not treat a Bedrock throttle as context overflow (%s)", (_label, text) => {
+		expect(isContextOverflow(createErrorMessage(text), 200000)).toBe(false);
+	});
+
+	it("still detects a genuine overflow that mentions tokens", () => {
+		const message = createErrorMessage("Input is too long: 213462 tokens exceeds the context_length_exceeded limit");
+		expect(isContextOverflow(message, 200000)).toBe(true);
+	});
 });

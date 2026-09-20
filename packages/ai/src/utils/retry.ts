@@ -12,7 +12,14 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 
 	// OpenCode Go subscription-limit text asks users to enable available-balance
 	// usage after rolling/weekly/monthly limits are reached.
-	"Monthly usage limit reached",
+	//
+	// Matched generically rather than per-window. "Monthly usage limit reached"
+	// was listed literally, so the rolling variants were not caught: a real
+	// 429 carrying `Usage limit reached for 5 hour. Your limit will reset at ...`
+	// was classified retryable and burned the whole retry budget against a wall
+	// that clears hours later. "You have hit your ChatGPT usage limit" missed for
+	// the same reason. An account-level usage limit is never a transient throttle.
+	"usage limit",
 	"available balance",
 
 	// Generic quota/budget/billing exhaustion. `insufficient_quota` is OpenAI's
@@ -28,12 +35,24 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"overloaded",
 	"rate.?limit",
 	"too many requests",
-	"429",
-	"500",
-	"502",
-	"503",
-	"504",
-	"524",
+	"throttl", // Bedrock "Throttling error:" / "ThrottlingException:" — a throttle is transient
+	// Bedrock also emits the throttle core with no prefix, so there is no
+	// "throttl" to match. Without this the text is neither overflow (correctly
+	// excluded) nor retryable, and a plain throttle fails the turn outright.
+	"too many tokens,\\s*please wait",
+
+	// Bare status codes, fenced so they cannot match digits inside a longer
+	// number. Unfenced, `502` matched the token count in
+	// "Input length (265029) exceeds model's maximum context length (262144)."
+	// and made a hard overflow look retryable. Any 7-digit numeral collides
+	// ~3% of the time, and request ids are worse; the status is re-parsed out
+	// of prose here only because `formatProviderError` drops the real one.
+	"(?<!\\d)429(?!\\d)",
+	"(?<!\\d)500(?!\\d)",
+	"(?<!\\d)502(?!\\d)",
+	"(?<!\\d)503(?!\\d)",
+	"(?<!\\d)504(?!\\d)",
+	"(?<!\\d)524(?!\\d)",
 	"service.?unavailable",
 	"server.?error",
 	"internal.?error",
@@ -224,6 +243,19 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
-	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
+	if (isTerminalProviderLimitError(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+}
+
+/**
+ * True when the text describes an account-level quota, budget, or subscription
+ * limit — something backoff cannot clear.
+ *
+ * Exported so the raw-fetch retry path in the Codex provider shares this list
+ * instead of carrying its own copy. The two lists were byte-identical and had to
+ * be kept in sync by hand, which is how "usage limit" fixes landed in one and
+ * not the other.
+ */
+export function isTerminalProviderLimitError(errorText: string): boolean {
+	return NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorText);
 }
