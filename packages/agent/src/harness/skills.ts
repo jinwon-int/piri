@@ -379,8 +379,13 @@ async function resolveKind(
 	return target.value.kind === "file" || target.value.kind === "directory" ? target.value.kind : undefined;
 }
 
-function dirnameEnvPath(path: string): string {
-	const normalized = path.replace(/[\\/]+$/, "");
+export function dirnameEnvPath(path: string): string {
+	// Trim trailing separators with a scan instead of /[\\/]+$/: on a path with
+	// a long run of separators that is not at the end, that regex retried the
+	// run from every position (CodeQL js/polynomial-redos, piri#27).
+	let end = path.length;
+	while (end > 0 && (path[end - 1] === "/" || path[end - 1] === "\\")) end--;
+	const normalized = path.slice(0, end);
 	const separatorIndex = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
 	if (separatorIndex === 2 && normalized[1] === ":") return normalized.slice(0, 3);
 	return separatorIndex <= 0 ? "/" : normalized.slice(0, separatorIndex);

@@ -610,10 +610,42 @@ function replaceCharacters(value: string, replacements: Readonly<Record<string, 
 	return result;
 }
 
+/**
+ * Drop whitespace on either side of `=`, `+` and `-`, leaving other whitespace
+ * untouched. Same result as replacing the global pattern "\s* ([=+-]) \s*"
+ * with "$1", but that regex re-scanned every whitespace run from each of its
+ * positions when no operator followed (CodeQL js/polynomial-redos, piri#27);
+ * this is one pass.
+ */
+export function stripOperatorWhitespace(value: string): string {
+	let result = "";
+	let index = 0;
+	while (index < value.length) {
+		const character = value[index];
+		if (/\s/.test(character)) {
+			let end = index;
+			while (end < value.length && /\s/.test(value[end])) end++;
+			if (end < value.length && (value[end] === "=" || value[end] === "+" || value[end] === "-")) {
+				index = end; // whitespace before an operator is dropped
+			} else {
+				result += value.slice(index, end);
+				index = end;
+			}
+			continue;
+		}
+		result += character;
+		index++;
+		if (character === "=" || character === "+" || character === "-") {
+			while (index < value.length && /\s/.test(value[index])) index++; // whitespace after an operator is dropped
+		}
+	}
+	return result;
+}
+
 function formatScript(value: string, kind: "sub" | "sup"): string {
 	value = value.trim();
 	const replacements = kind === "sub" ? SUBSCRIPTS : SUPERSCRIPTS;
-	const unicode = replaceCharacters(value.replace(/\s*([=+-])\s*/g, "$1"), replacements);
+	const unicode = replaceCharacters(stripOperatorWhitespace(value), replacements);
 	if (unicode !== undefined) {
 		return unicode;
 	}

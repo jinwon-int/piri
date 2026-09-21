@@ -5,10 +5,40 @@ import { theme } from "../theme/theme.ts";
  * Parse diff line to extract prefix, line number, and content.
  * Format: "+123 content" or "-123 content" or " 123 content" or "     ..."
  */
-function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
-	const match = line.match(/^([+-\s])(\s*\d*)\s(.*)$/);
-	if (!match) return null;
-	return { prefix: match[1], lineNum: match[2], content: match[3] };
+export function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
+	// Equivalent of /^([+-\s])(\s*\d*)\s(.*)$/ without the backtracking: the
+	// `\s*` before the digits and the single `\s` after them overlap, so a line
+	// of whitespace with no content retried every split (CodeQL
+	// js/polynomial-redos, piri#27). Diff lines come from file contents.
+	if (line.length === 0) return null;
+	const prefix = line[0];
+	if (prefix !== "+" && prefix !== "-" && !isWhitespace(prefix)) return null;
+
+	// The regex tried, in this order: the longest whitespace run, then the
+	// longest digit run, then one whitespace separator; on failure it shrank the
+	// whitespace run one character at a time (each shrink makes the separator
+	// the run's last character and hands the rest, digits included, to the
+	// content). Content (`.*$`) may not contain a newline, whitespace may.
+	let runEnd = 1;
+	while (runEnd < line.length && isWhitespace(line[runEnd])) runEnd++;
+	let digitsEnd = runEnd;
+	while (digitsEnd < line.length && line[digitsEnd] >= "0" && line[digitsEnd] <= "9") digitsEnd++;
+
+	// Content may not contain a newline, so the separator must sit at or after
+	// the last newline; only the largest such separator is reachable.
+	const lastNewline = line.lastIndexOf("\n");
+	if (digitsEnd < line.length && isWhitespace(line[digitsEnd]) && digitsEnd >= lastNewline) {
+		return { prefix, lineNum: line.slice(1, digitsEnd), content: line.slice(digitsEnd + 1) };
+	}
+	const separator = runEnd - 1;
+	if (separator >= 1 && separator >= lastNewline) {
+		return { prefix, lineNum: line.slice(1, separator), content: line.slice(separator + 1) };
+	}
+	return null;
+}
+
+function isWhitespace(character: string): boolean {
+	return /\s/.test(character);
 }
 
 /**

@@ -130,14 +130,49 @@ export interface ParsedSkillBlock {
  * Returns null if the text doesn't contain a skill block.
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
-	if (!match) return null;
-	return {
-		name: match[1],
-		location: match[2],
-		content: match[3],
-		userMessage: match[4]?.trim() || undefined,
-	};
+	// Hand-rolled equivalent of
+	//   /^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/
+	// The lazy body plus the optional trailer made the regex retry every
+	// "\n</skill>" candidate against the rest of the text, which is quadratic
+	// on message text (CodeQL js/polynomial-redos, piri#27). The scan below keeps
+	// the same result: the first "\n</skill>" that is followed by either nothing
+	// or "\n\n" plus at least one character closes the block.
+	const nameStart = '<skill name="';
+	if (!text.startsWith(nameStart)) return null;
+	const nameEnd = text.indexOf('"', nameStart.length);
+	if (nameEnd <= nameStart.length) return null;
+	const name = text.slice(nameStart.length, nameEnd);
+
+	const locationStart = '" location="';
+	if (!text.startsWith(locationStart, nameEnd)) return null;
+	const locationValueStart = nameEnd + locationStart.length;
+	const locationEnd = text.indexOf('"', locationValueStart);
+	if (locationEnd <= locationValueStart) return null;
+	const location = text.slice(locationValueStart, locationEnd);
+
+	const headerEnd = '">\n';
+	if (!text.startsWith(headerEnd, locationEnd)) return null;
+	const contentStart = locationEnd + headerEnd.length;
+
+	const closer = "\n</skill>";
+	let search = contentStart;
+	while (true) {
+		const closerIndex = text.indexOf(closer, search);
+		if (closerIndex === -1) return null;
+		const rest = text.slice(closerIndex + closer.length);
+		if (rest === "") {
+			return { name, location, content: text.slice(contentStart, closerIndex), userMessage: undefined };
+		}
+		if (rest.startsWith("\n\n") && rest.length > 2) {
+			return {
+				name,
+				location,
+				content: text.slice(contentStart, closerIndex),
+				userMessage: rest.slice(2).trim() || undefined,
+			};
+		}
+		search = closerIndex + 1;
+	}
 }
 
 /** Session-specific events that extend the core AgentEvent */
