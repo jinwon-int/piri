@@ -59,9 +59,10 @@ describe("package manager refuses option-looking git refs (piri#27)", () => {
 		expect(runCommandCaptureSpy).not.toHaveBeenCalled();
 	});
 
-	it("still installs a plain pinned ref with the same git arguments as before", async () => {
+	it("ends option parsing with -- before the repo on clone and before the ref on fetch", async () => {
 		const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
 		vi.spyOn(packageManager as any, "runNpmCommand").mockResolvedValue(undefined);
+		const ensureGitRefSpy = vi.spyOn(packageManager as any, "ensureGitRef").mockResolvedValue(undefined);
 		const source = {
 			type: "git" as const,
 			repo: "https://github.com/user/repo",
@@ -72,9 +73,12 @@ describe("package manager refuses option-looking git refs (piri#27)", () => {
 		};
 
 		await (packageManager as any).installGit(source, "user");
+		mkdirSync((packageManager as any).getGitInstallPath(source, "user"), { recursive: true });
+		await (packageManager as any).updateGit(source, "user");
+		expect(ensureGitRefSpy).toHaveBeenCalledWith(expect.any(String), ["fetch", "origin", "--", "v1.2.3"], "FETCH_HEAD");
 
 		const gitCalls = runCommandSpy.mock.calls.filter((call) => call[0] === "git");
-		expect(gitCalls[0]?.[1]).toEqual(["clone", "https://github.com/user/repo", expect.any(String)]);
+		expect(gitCalls[0]?.[1]).toEqual(["clone", "--", "https://github.com/user/repo", expect.any(String)]);
 		expect(gitCalls[1]?.[1]).toEqual(["checkout", "v1.2.3"]);
 	});
 });

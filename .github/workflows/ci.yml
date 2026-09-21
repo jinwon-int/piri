@@ -11,6 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The job only checks out, builds and tests; it never writes to the repository
+# (CodeQL actions/missing-workflow-permissions, piri#27).
+permissions:
+  contents: read
+
 jobs:
   build-check-test:
     runs-on: ubuntu-latest
