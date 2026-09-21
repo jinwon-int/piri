@@ -1853,7 +1853,7 @@ export class DefaultPackageManager implements PackageManager {
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+				await this.ensureGitRef(targetDir, ["fetch", "origin", "--", source.ref], "FETCH_HEAD");
 				return;
 			}
 			const target = await this.getLocalGitUpdateTarget(targetDir);
@@ -1868,7 +1868,11 @@ export class DefaultPackageManager implements PackageManager {
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
 
 		try {
-			await this.runCommand("git", ["clone", source.repo, targetDir]);
+			// "--" ends option parsing so a repo/ref that starts with "-" can never be
+			// read as a git option (CodeQL js/second-order-command-line-injection,
+			// piri#27). checkout deliberately has no "--": there it would turn the
+			// ref into a pathspec, so that path relies on assertSafeGitSource().
+			await this.runCommand("git", ["clone", "--", source.repo, targetDir]);
 			if (source.ref) {
 				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
 			}
@@ -1892,7 +1896,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+			await this.ensureGitRef(targetDir, ["fetch", "origin", "--", source.ref], "FETCH_HEAD");
 			return;
 		}
 
