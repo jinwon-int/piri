@@ -101,6 +101,21 @@ function hasUnsafeGitInstallPart(value: string, allowSlash: boolean): boolean {
 	return false;
 }
 
+/**
+ * A ref is handed to git as a positional argument (`git fetch origin <ref>`,
+ * `git checkout <ref>`). Anything that starts with "-" would be parsed as an
+ * option instead — `--upload-pack=<cmd>` runs an arbitrary command — and the
+ * package source can come from a project's settings, so it is not trusted
+ * input. Mirror `git check-ref-format` for the rest: no whitespace or control
+ * characters, none of `~ ^ : ? * [ \`, no `..`, no trailing `.lock`.
+ */
+export function isUnsafeGitRef(ref: string): boolean {
+	if (!ref || ref.startsWith("-")) return true;
+	if (/[\s\0-\x1f\x7f~^:?*[\\]/.test(ref)) return true;
+	if (ref.includes("..") || ref.endsWith(".lock") || ref.endsWith("/") || ref.endsWith(".")) return true;
+	return false;
+}
+
 function buildGitSource(args: { repo: string; host: string; path: string; ref?: string }): GitSource | null {
 	if (args.path.startsWith("/")) {
 		return null;
@@ -110,6 +125,9 @@ function buildGitSource(args: { repo: string; host: string; path: string; ref?: 
 		return null;
 	}
 	if (hasUnsafeGitInstallPart(args.host, false) || hasUnsafeGitInstallPart(normalizedPath, true)) {
+		return null;
+	}
+	if (args.ref !== undefined && isUnsafeGitRef(args.ref)) {
 		return null;
 	}
 

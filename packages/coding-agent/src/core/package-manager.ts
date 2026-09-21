@@ -39,7 +39,7 @@ import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
-import { type GitSource, parseGitUrl } from "../utils/git.ts";
+import { type GitSource, isUnsafeGitRef, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
@@ -1729,13 +1729,20 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private parseNpmSpec(spec: string): { name: string; version?: string } {
-		const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
-		if (!match) {
+		// Split on the first "@" after an optional leading scope marker. The old
+		// regex `^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$` let `[^@]+` and `\/[^@]+`
+		// overlap on "/", so a spec with many slashes and no version backtracked
+		// quadratically (CodeQL js/polynomial-redos, piri#27). This scan is linear
+		// and keeps the old results: the name is everything before the first "@"
+		// (after an optional scope "@"), the version is the non-empty rest on the
+		// same line, and anything else is returned whole as the name.
+		const separator = spec.indexOf("@", spec.startsWith("@") ? 1 : 0);
+		const name = separator === -1 ? spec : spec.slice(0, separator);
+		const version = separator === -1 ? undefined : spec.slice(separator + 1);
+		if (!name || name === "@" || (separator !== -1 && (!version || version.includes("\n")))) {
 			return { name: spec };
 		}
-		const name = match[1] ?? spec;
-		const version = match[2];
-		return { name, version };
+		return version ? { name, version } : { name };
 	}
 
 	private assertProjectTrustedForScope(scope: SourceScope): void {
@@ -1828,7 +1835,21 @@ export class DefaultPackageManager implements PackageManager {
 		await this.runNpmCommand(args);
 	}
 
+	/**
+	 * `source.ref` becomes a positional git argument (`fetch origin <ref>`,
+	 * `checkout <ref>`). parseGitUrl() already refuses option-looking refs, but a
+	 * GitSource can also arrive from stored settings, so refuse again here —
+	 * before any git process is spawned (CodeQL
+	 * js/second-order-command-line-injection, piri#27).
+	 */
+	private assertSafeGitSource(source: GitSource): void {
+		if (source.ref !== undefined && isUnsafeGitRef(source.ref)) {
+			throw new Error(`Refusing git ref that is not a plain ref name: ${JSON.stringify(source.ref)}`);
+		}
+	}
+
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		this.assertSafeGitSource(source);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
@@ -1863,6 +1884,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
+		this.assertSafeGitSource(source);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);

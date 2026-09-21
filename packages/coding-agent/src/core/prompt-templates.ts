@@ -67,37 +67,60 @@ export function parseCommandArgs(argsString: string): string[] {
  * Note: Replacement happens on the template string only. Argument and default values
  * containing patterns like $1, $@, or $ARGUMENTS are NOT recursively substituted.
  */
+// `${…}` forms need a closing brace, `$N` / `$@` / `$ARGUMENTS` do not.
+const BRACED_OR_SIMPLE_PLACEHOLDER = /\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g;
+const SIMPLE_PLACEHOLDER = /()()()()\$(ARGUMENTS|@|\d+)/g;
+
 export function substituteArgs(content: string, args: string[]): string {
 	const allArgs = args.join(" ");
 
-	return content.replace(
-		/\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
-		(_match, defaultTarget, defaultValue, sliceStart, sliceLength, simple) => {
-			if (defaultTarget) {
-				const value =
-					defaultTarget === "@" || defaultTarget === "ARGUMENTS" ? allArgs : args[parseInt(defaultTarget, 10) - 1];
-				return value ? value : defaultValue;
+	const replacer = (
+		_match: string,
+		defaultTarget: string,
+		defaultValue: string,
+		sliceStart: string,
+		sliceLength: string,
+		simple: string,
+	): string => {
+		if (defaultTarget) {
+			const value =
+				defaultTarget === "@" || defaultTarget === "ARGUMENTS" ? allArgs : args[parseInt(defaultTarget, 10) - 1];
+			return value ? value : defaultValue;
+		}
+
+		if (sliceStart) {
+			let start = parseInt(sliceStart, 10) - 1; // Convert to 0-indexed (user provides 1-indexed)
+			// Treat 0 as 1 (bash convention: args start at 1)
+			if (start < 0) start = 0;
+
+			if (sliceLength) {
+				const length = parseInt(sliceLength, 10);
+				return args.slice(start, start + length).join(" ");
 			}
+			return args.slice(start).join(" ");
+		}
 
-			if (sliceStart) {
-				let start = parseInt(sliceStart, 10) - 1; // Convert to 0-indexed (user provides 1-indexed)
-				// Treat 0 as 1 (bash convention: args start at 1)
-				if (start < 0) start = 0;
+		if (simple === "ARGUMENTS" || simple === "@") {
+			return allArgs;
+		}
 
-				if (sliceLength) {
-					const length = parseInt(sliceLength, 10);
-					return args.slice(start, start + length).join(" ");
-				}
-				return args.slice(start).join(" ");
-			}
+		const index = parseInt(simple, 10) - 1;
+		return args[index] ?? "";
+	};
 
-			if (simple === "ARGUMENTS" || simple === "@") {
-				return allArgs;
-			}
-
-			const index = parseInt(simple, 10) - 1;
-			return args[index] ?? "";
-		},
+	// Every `${N:-` that has no "}" ahead of it makes `[^}]*` scan to the end of
+	// the template before failing, which is quadratic on templates with many
+	// unterminated placeholders (CodeQL js/polynomial-redos, piri#27). No braced
+	// form can match past the last "}", so split there: in the head every
+	// `[^}]*` scan ends at a "}" and is consumed, and the tail only needs the
+	// brace-free forms. Results are identical to running the full pattern once.
+	const lastBrace = content.lastIndexOf("}");
+	if (lastBrace === -1) {
+		return content.replace(SIMPLE_PLACEHOLDER, replacer);
+	}
+	return (
+		content.slice(0, lastBrace + 1).replace(BRACED_OR_SIMPLE_PLACEHOLDER, replacer) +
+		content.slice(lastBrace + 1).replace(SIMPLE_PLACEHOLDER, replacer)
 	);
 }
 

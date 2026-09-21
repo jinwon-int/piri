@@ -110,7 +110,12 @@ export function compileOutputSchema(schema: TSchema): OutputSchemaValidator {
  * balanced candidate exists.
  */
 export function extractJsonCandidate(text: string): string | undefined {
-	const fenced = text.match(/```(?:json)?\s*\r?\n([\s\S]*?)```/);
+	// Only horizontal whitespace may follow the fence marker before its newline.
+	// `\s*\r?\n` let the run of newlines/tabs after ``` be split every possible
+	// way, and each split rescanned the text for the closing fence (CodeQL
+	// js/polynomial-redos, piri#27). Extra blank lines end up inside the
+	// capture instead, which the brace search below ignores anyway.
+	const fenced = text.match(/```(?:json)?[ \t]*\r?\n([\s\S]*?)```/);
 	const haystack = fenced ? fenced[1] : text;
 	const start = haystack.search(/[{[]/);
 	if (start === -1) return undefined;
