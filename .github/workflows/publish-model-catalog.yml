@@ -36,7 +36,13 @@ permissions:
 
 jobs:
   generate:
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    # workflow_run runs with default-branch privileges and checks out
+    # SOURCE_REF (the triggering run's head_sha). `head_branch == 'main'` alone
+    # is satisfied by a fork PR whose branch is named "main", which would let a
+    # fork commit populate the default-branch npm cache and run its scripts
+    # here (CodeQL actions/cache-poisoning/poisonable-step, piri#27). Require
+    # the run to come from a push to this repository, not from a PR.
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-latest
     env:
       SOURCE_REF: ${{ github.event.workflow_run.head_sha || inputs.source_ref || github.sha }}
