@@ -14,6 +14,7 @@ import {
 	CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL,
 	CLOUDFLARE_WORKERS_AI_BASE_URL,
 } from "../src/api/cloudflare.ts";
+import { baseUrlHostIs } from "../src/utils/base-url-host.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -645,12 +646,12 @@ function detectOpenAICompletionsCompat(model: Model<"openai-completions">): Open
 		provider === "together" || baseUrl.includes("api.together.ai") || baseUrl.includes("api.together.xyz");
 	const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
 	const isOpenRouter = provider === "openrouter" || baseUrl.includes("openrouter.ai");
-	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
-	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
-	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
-	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
+	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrlHostIs(baseUrl, "api.cloudflare.com");
+	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrlHostIs(baseUrl, "gateway.ai.cloudflare.com");
+	const isNvidia = provider === "nvidia" || baseUrlHostIs(baseUrl, "integrate.api.nvidia.com");
+	const isAntLing = provider === "ant-ling" || baseUrlHostIs(baseUrl, "api.ant-ling.com");
 	const isTogetherReasoningOnly = isTogether && TOGETHER_REASONING_ONLY_MODELS.has(model.id);
-	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
+	const isDeepSeek = provider === "deepseek" || baseUrlHostIs(baseUrl, "deepseek.com");
 
 	const isNonStandard =
 		isNvidia ||

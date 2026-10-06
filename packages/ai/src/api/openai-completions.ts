@@ -36,6 +36,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+import { baseUrlHostIs } from "../utils/base-url-host.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
@@ -808,7 +809,7 @@ function buildParams(
 		messages,
 		stream: true,
 		prompt_cache_key:
-			(model.baseUrl.includes("api.openai.com") && cacheRetention !== "none") ||
+			(baseUrlHostIs(model.baseUrl, "api.openai.com") && cacheRetention !== "none") ||
 			(cacheRetention === "long" && compat.supportsLongCacheRetention)
 				? clampOpenAIPromptCacheKey(options?.sessionId)
 				: undefined,
@@ -1591,11 +1592,12 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		provider === "together" || baseUrl.includes("api.together.ai") || baseUrl.includes("api.together.xyz");
 	const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
 	const isOpenRouter = provider === "openrouter" || baseUrl.includes("openrouter.ai");
-	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
-	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
-	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
-	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
-	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
+	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrlHostIs(baseUrl, "api.cloudflare.com");
+	const isCloudflareAiGateway =
+		provider === "cloudflare-ai-gateway" || baseUrlHostIs(baseUrl, "gateway.ai.cloudflare.com");
+	const isNvidia = provider === "nvidia" || baseUrlHostIs(baseUrl, "integrate.api.nvidia.com");
+	const isAntLing = provider === "ant-ling" || baseUrlHostIs(baseUrl, "api.ant-ling.com");
+	const isDeepSeek = provider === "deepseek" || baseUrlHostIs(baseUrl, "deepseek.com");
 
 	const isNonStandard =
 		isNvidia ||
