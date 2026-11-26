@@ -1,5 +1,13 @@
 name: Approve Contributor
 
+# A maintainer's `lgtm`/`lgtmi` reply updates .github/APPROVED_CONTRIBUTORS.
+# main is never pushed directly: the default-branch ruleset (PR + approval +
+# required checks + merge queue) rejects that (#34). The change goes to
+# automation/approve-contributors-issue-<n> and is proposed as a PR; it takes
+# effect only once that PR merges. If Actions may not create PRs here (the
+# repo setting is off by design: it would also let Actions approve PRs), the
+# issue comment carries a compare link and a maintainer opens the PR from it.
+
 on:
   issue_comment:
     types: [created]
@@ -173,20 +181,47 @@ jobs:
             fs.writeFileSync(APPROVED_FILE, stringifyApprovedUsers(entries));
             core.setOutput('status', 'changed');
 
-      - name: Commit and push
+      - name: Push approval branch and open PR
+        id: propose
         if: steps.update.outputs.status == 'changed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in ''|*[!0-9]*) echo "::error::unexpected issue number"; exit 1;; esac
+          branch="automation/approve-contributors-issue-$ISSUE_NUMBER"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
           git add .github/APPROVED_CONTRIBUTORS
-          git diff --staged --quiet || git commit -m "chore: approve contributors from issue #${{ github.event.issue.number }}"
-          git push
+          git diff --staged --quiet && { echo "No change to propose."; exit 0; }
+          git commit -m "chore: approve contributors from issue #$ISSUE_NUMBER"
+          git push --force origin "HEAD:refs/heads/$branch"
+
+          compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$branch?expand=1"
+          url=$(gh pr list --base "$DEFAULT_BRANCH" --head "$branch" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$url" ]; then
+            body=$(printf 'Adds the contributor approval requested in #%s to .github/APPROVED_CONTRIBUTORS.\n\nIt takes effect once this PR merges.\n' "$ISSUE_NUMBER")
+            if ! url=$(gh pr create --base "$DEFAULT_BRANCH" --head "$branch" \
+                --title "chore: approve contributors from issue #$ISSUE_NUMBER" --body "$body" 2>/tmp/pr-create.err); then
+              echo "gh pr create failed: $(head -c 300 /tmp/pr-create.err)"
+              echo "::warning::Approval is on $branch but no PR was opened (Actions may not create PRs here). Open it from: $compare"
+              url=""
+            fi
+          fi
+          echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          echo "compare_url=$compare" >> "$GITHUB_OUTPUT"
+          echo "Approval branch: $branch ${url:-(no PR; open from $compare)}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on issue
         if: steps.update.outputs.status == 'changed' || steps.update.outputs.status == 'already'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CAPABILITY: ${{ steps.update.outputs.capability }}
+          PR_URL: ${{ steps.propose.outputs.pr_url }}
+          COMPARE_URL: ${{ steps.propose.outputs.compare_url }}
           CHANGED_TARGETS: ${{ steps.update.outputs.changed_targets }}
           ALREADY_TARGETS: ${{ steps.update.outputs.already_targets }}
         with:
@@ -199,10 +234,16 @@ jobs:
             const bodyLines = [];
 
             if (changedTargets.length > 0) {
+              const prUrl = process.env.PR_URL || '';
+              const compareUrl = process.env.COMPARE_URL || '';
+              const where = prUrl
+                ? `the PR ${prUrl}`
+                : (compareUrl ? `a PR a maintainer opens from ${compareUrl}` : 'a pending PR');
+              bodyLines.push(`Approval proposed in ${where}. It takes effect once that PR merges into \`${defaultBranch}\`; until then future issues and PRs may still be auto-closed.`, '');
               if (capability === 'issue') {
-                bodyLines.push(`${formatTargets(changedTargets)} approved for issues. Future issues will not be auto-closed. PRs still require \`lgtm\` at the start of a maintainer reply (optionally after one or more \`@username\` mentions) or at the end.`);
+                bodyLines.push(`Once merged: ${formatTargets(changedTargets)} approved for issues. Future issues will not be auto-closed. PRs still require \`lgtm\` at the start of a maintainer reply (optionally after one or more \`@username\` mentions) or at the end.`);
               } else {
-                bodyLines.push(`${formatTargets(changedTargets)} approved for issues and PRs. Future issues and PRs will not be auto-closed.`);
+                bodyLines.push(`Once merged: ${formatTargets(changedTargets)} approved for issues and PRs. Future issues and PRs will not be auto-closed.`);
               }
             }
 
