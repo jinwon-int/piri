@@ -681,6 +681,7 @@ pi --thinking high "Solve this complex problem"
 | `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
 | `PI_TELEMETRY` | Override install/update telemetry and provider attribution headers. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+| `PI_SHELL_IDLE_TIMEOUT` | Seconds a `bash`/`powershell` tool call without an explicit `timeout` may produce no output before it is stopped (default: `1800`, 30 min; `0` disables). Calls with `timeout` are unaffected |
 | `VISUAL`, `EDITOR` | Fallback external editor for Ctrl+G when `externalEditor` is unset; defaults to Notepad on Windows and `nano` elsewhere |
 
 Commands run by the LLM-callable `bash` and `powershell` tools also receive current session metadata:
