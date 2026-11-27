@@ -81,6 +81,8 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 
 		const agent = match.agent;
 		const completedText = new Map<string, string>();
+		const terminalRuns = new Set<string>();
+		let awaitedRun: { readonly operationId: string; readonly resolve: () => void } | undefined;
 		let deliveryTail = Promise.resolve();
 		const unsubscribe = match.transcript.state.subscribe((value, _context, delivery) => {
 			if (delivery.kind !== "update" || value.event === null) return;
@@ -90,6 +92,10 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 					completedText.set(event.runId, messageText(event.message));
 				}
 				await options.onEvent?.(event);
+				if (event.type === "run_end" || event.type === "run_suspend") {
+					terminalRuns.add(event.runId);
+					if (awaitedRun?.operationId === event.runId) awaitedRun.resolve();
+				}
 			});
 		});
 		if (match.transcript.state.value?.snapshot === null || match.transcript.state.value?.snapshot === undefined) {
@@ -99,6 +105,17 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		let response: AgentOperationResponse;
 		try {
 			response = await agent.prompt({ message: command.prompt, images: null }, BACKGROUND_CONTEXT);
+			// The operation response and the replicated Transcript stream travel independently; keep the
+			// subscription until this run's terminal event is delivered (bounded so a lost stream cannot hang).
+			if (response.accepted && !terminalRuns.has(response.operationId)) {
+				const operationId = response.operationId;
+				let timer: NodeJS.Timeout | undefined;
+				await new Promise<void>((resolve) => {
+					awaitedRun = { operationId, resolve };
+					timer = setTimeout(resolve, TERMINAL_EVENT_GRACE_MS);
+				});
+				clearTimeout(timer);
+			}
 		} finally {
 			unsubscribe();
 			await deliveryTail;
@@ -115,6 +132,8 @@ export async function runClient(command: ClientCommand, options: RunClientOption
 		await runtime.dispose();
 	}
 }
+
+const TERMINAL_EVENT_GRACE_MS = 5_000;
 
 function messageText(message: AssistantMessage): string {
 	return message.content
