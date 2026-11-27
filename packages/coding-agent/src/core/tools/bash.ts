@@ -35,9 +35,42 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	return timeoutMs;
 }
 
+/** Default no-output window for shell tool calls that omit `timeout`. */
+export const DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60;
+
+/** Environment variable that overrides the idle timeout, in seconds; `0` disables it. */
+export const IDLE_TIMEOUT_ENV = "PI_SHELL_IDLE_TIMEOUT";
+
+function parseIdleTimeoutSeconds(value: number | undefined): number | undefined {
+	return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Resolve the inactivity timeout applied only when a call passes no `timeout`.
+ * Precedence: `idleTimeout` option, then `PI_SHELL_IDLE_TIMEOUT`, then 30 minutes.
+ * Invalid values fall back to the next source; `0` disables the idle timeout.
+ */
+export function resolveIdleTimeoutMs(idleTimeout?: number): number | undefined {
+	const rawEnv = process.env[IDLE_TIMEOUT_ENV]?.trim();
+	const seconds =
+		parseIdleTimeoutSeconds(idleTimeout) ??
+		parseIdleTimeoutSeconds(rawEnv ? Number(rawEnv) : undefined) ??
+		DEFAULT_IDLE_TIMEOUT_SECONDS;
+	return seconds > 0 ? Math.min(seconds * 1000, MAX_TIMEOUT_MS) : undefined;
+}
+
+function formatIdleTimeout(ms: number): string {
+	return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${ms / 1000} seconds`;
+}
+
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Shell command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(
+		Type.Number({
+			description:
+				"Timeout in seconds (optional). Without it, the command is stopped only if it produces no output for the idle window (default 30 min); with it, only this wall-clock limit applies.",
+		}),
+	),
 });
 
 export const bashToolSystemPromptContribution = {
@@ -202,6 +235,11 @@ export interface BashToolOptions {
 	exposeSessionEnvironment?: boolean;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/**
+	 * Stop a call that passes no `timeout` once it produces no stdout/stderr for this many seconds.
+	 * `0` disables it. Default: `PI_SHELL_IDLE_TIMEOUT`, else 30 minutes. Explicit `timeout` calls are unaffected.
+	 */
+	idleTimeout?: number;
 }
 
 export type BashRenderState = {
@@ -229,10 +267,15 @@ export function createShellToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
+	const idleTimeoutMs = resolveIdleTimeoutMs(options?.idleTimeout);
+	const timeoutDescription =
+		idleTimeoutMs === undefined
+			? "Optionally provide a timeout in seconds."
+			: `Optionally provide a timeout in seconds; without one, a command that produces no output for ${formatIdleTimeout(idleTimeoutMs)} is stopped.`;
 	return {
 		name: config.name,
 		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. ${timeoutDescription}`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
@@ -298,7 +341,20 @@ export function createShellToolDefinition(
 				onUpdate({ content: [], details: undefined });
 			}
 
+			// Idle (no-output) timeout: only when the caller gave no explicit timeout. It aborts
+			// through the same signal path as a user abort, so the whole process tree is killed.
+			const idleController =
+				timeout === undefined && idleTimeoutMs !== undefined ? new AbortController() : undefined;
+			let idleTimer: NodeJS.Timeout | undefined;
+			let idleTimedOut = false;
+			const forwardAbort = () => idleController?.abort();
+			if (idleController && signal) {
+				if (signal.aborted) idleController.abort();
+				else signal.addEventListener("abort", forwardAbort, { once: true });
+			}
+
 			const handleData = (data: Buffer) => {
+				idleTimer?.refresh();
 				if (!acceptingOutput) return;
 				output.append(data);
 				scheduleOutputUpdate();
@@ -339,9 +395,15 @@ export function createShellToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
+					if (idleController && idleTimeoutMs !== undefined) {
+						idleTimer = setTimeout(() => {
+							idleTimedOut = true;
+							idleController.abort();
+						}, idleTimeoutMs);
+					}
 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
-						signal,
+						signal: idleController?.signal ?? signal,
 						timeout,
 						env: spawnContext.env,
 					});
@@ -349,6 +411,14 @@ export function createShellToolDefinition(
 				} catch (err) {
 					const snapshot = await finishOutput();
 					const { text } = formatOutput(snapshot, "");
+					if (idleTimedOut && idleTimeoutMs !== undefined && !signal?.aborted) {
+						throw new Error(
+							appendStatus(
+								text,
+								`Command stopped: no output for ${formatIdleTimeout(idleTimeoutMs)}. Pass an explicit timeout to allow longer silent periods.`,
+							),
+						);
+					}
 					if (err instanceof Error && err.message === "aborted") {
 						throw new Error(appendStatus(text, "Command aborted"));
 					}
@@ -367,6 +437,8 @@ export function createShellToolDefinition(
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {
 				clearUpdateTimer();
+				if (idleTimer) clearTimeout(idleTimer);
+				signal?.removeEventListener("abort", forwardAbort);
 			}
 		},
 		...createShellRenderers(config.prompt),
